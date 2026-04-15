@@ -782,38 +782,40 @@ function boot() {
 
   /* Кнопка на карточке фильма */
   Lampa.Listener.follow('full', function (e) {
-    if (e.type !== 'complete') return;
+    console.log(e);
 
-    var container = document.querySelector('.full-start__buttons') || document.querySelector('.full-start-new__buttons');
-    if (!container) return;
+    setTimeout(function () {
+      var container = document.querySelector('.full-start__buttons') || document.querySelector('.full-start-new__buttons') || document.querySelector('.full-details__buttons');
+      if (!container) return;
 
-    if (container.querySelector('.online-ultra-btn')) return;
+      if (document.querySelector('.online-ultra-btn')) return;
 
-    var btn = document.createElement('div');
-    btn.className = 'full-start__button selector online-ultra-btn';
-    btn.style.cssText = [
-      'background:linear-gradient(135deg,#e8a838,#f5c842)',
-      'color:#000',
-      'font-weight:800',
-      'display:flex',
-      'align-items:center',
-      'gap:.4em',
-      'border-radius:6px',
-    ].join(';');
+      var btn = document.createElement('div');
+      btn.className = 'full-start__button selector online-ultra-btn';
+      btn.style.cssText = [
+        'background:linear-gradient(135deg,#e8a838,#f5c842)',
+        'color:#000',
+        'font-weight:800',
+        'display:flex',
+        'align-items:center',
+        'gap:.4em',
+        'border-radius:6px',
+      ].join(';');
 
-    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg> Online Ultra';
+      btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg> Online Ultra';
 
-    btn.addEventListener('click', function () {
-      Lampa.Activity.push({
-        url:       '',
-        title:     (e.data.movie||e.data).original_title || (e.data.movie||e.data).title || (e.data.movie||e.data).name || 'Online Ultra',
-        component: 'online_ultra',
-        movie:     e.data.movie || e.data,
-        page:      1,
+      btn.addEventListener('click', function () {
+        Lampa.Activity.push({
+          url:       '',
+          title:     (e.data.movie||e.data).original_title || (e.data.movie||e.data).title || (e.data.movie||e.data).name || 'Online Ultra',
+          component: 'online_ultra',
+          movie:     e.data.movie || e.data,
+          page:      1,
+        });
       });
-    });
 
-    container.insertBefore(btn, container.firstChild);
+      container.insertBefore(btn, container.firstChild);
+    })
   });
 
   /* Настройки */

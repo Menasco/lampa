@@ -379,7 +379,7 @@ function c(tag, cls, html) {
 }
 
 function isSeries(card) {
-  return !!(card.number_of_seasons || card.seasons || card.episode_run_time || card.name);
+  return card.type === 'tv' || card.name;
 }
 
 function storeKey(card) {
@@ -729,14 +729,21 @@ function OnlineUltraComponent(object) {
     showLoader('Загрузка потока...');
 
     src.getStreams(ui.srcData, ui.srcInfo, season, ep, ui.voice, function (streams) {
-      if (!streams || !streams.length) return showError('Потоки не найдены');
+      if (!streams || !Array.isArray(streams) || !streams.length) return showError('Потоки не найдены');
 
       if (serial) markWatched(card, ui.season, ui.episode, ui.voice);
 
       // Pick best quality
-      var stream = streams[0];
-      if (ui.quality && !stream.iframe) {
-        streams.forEach(function(s){ if (s.quality === ui.quality) stream = s; });
+      var normalStreams = streams.filter(function(s){
+        return !s.iframe;
+      });
+
+      var stream = normalStreams[0] || streams[0];
+
+      if (ui.quality && normalStreams.length) {
+        normalStreams.forEach(function(s){
+          if (s.quality === ui.quality) stream = s;
+        });
       }
 
       var title = card.original_title || card.title || card.name || '';
@@ -775,10 +782,15 @@ function boot() {
 
   /* Кнопка на карточке фильма */
   Lampa.Listener.follow('full', function (e) {
-    if (e.type !== 'complite') return;
+    if (e.type !== 'complete') return;
+
+    var container = document.querySelector('.full-start__buttons') || document.querySelector('.full-start-new__buttons');
+    if (!container) return;
+
+    if (container.querySelector('.online-ultra-btn')) return;
 
     var btn = document.createElement('div');
-    btn.className = 'full-start__button selector';
+    btn.className = 'full-start__button selector online-ultra-btn';
     btn.style.cssText = [
       'background:linear-gradient(135deg,#e8a838,#f5c842)',
       'color:#000',
@@ -801,8 +813,7 @@ function boot() {
       });
     });
 
-    var container = e.object.activity.render().querySelector('.full-start__buttons');
-    if (container) container.insertBefore(btn, container.firstChild);
+    container.insertBefore(btn, container.firstChild);
   });
 
   /* Настройки */
@@ -830,7 +841,13 @@ function boot() {
   Lampa.Noty.show('✅ Online Ultra 2.0 готов (12 источников)');
 }
 
-if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', boot);
-else boot();
+function waitLampa() {
+  if (!window.Lampa || !Lampa.Listener || !Lampa.Component) {
+    return setTimeout(waitLampa, 200);
+  }
 
+  boot();
+}
+
+waitLampa();
 })();

@@ -809,10 +809,10 @@ function boot() {
         url: '',
         title: 'Online Ultra',
         component: 'online_ultra',
-        search: object.title,
-        search_one: object.title,
-        search_two: object.original_title,
-        movie: object,
+        search: e.data.movie.title,
+        search_one: e.data.movie.title,
+        search_two: e.data.movie.original_title,
+        movie: e.data.movie,
         page: 1,
       });
     });

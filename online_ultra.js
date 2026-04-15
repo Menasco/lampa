@@ -782,7 +782,7 @@ function boot() {
 
   /* Кнопка на карточке фильма */
   Lampa.Listener.follow('full', function (e) {
-    if (e.type && e.type !== 'complete') return;
+    if (e.type !== 'complite') return;
 
     setTimeout(function () {
       var container = document.querySelector('.full-start__buttons') || document.querySelector('.full-start-new__buttons') || document.querySelector('.full-details__buttons');

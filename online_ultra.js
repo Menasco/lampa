@@ -368,7 +368,21 @@ function getProxy(key) {
 }
 
 function ajax(url, done, fail) {
-  Lampa.Api.get(url, done, fail);
+  if (Lampa.Utils && Lampa.Utils.request) {
+    Lampa.Utils.request({
+      url: url,
+      method: 'GET',
+      dataType: 'json',
+      success: done,
+      error: fail
+    });
+  }
+  else {
+    fetch(url)
+      .then(r => r.json())
+      .then(done)
+      .catch(fail);
+  }
 }
 
 function c(tag, cls, html) {

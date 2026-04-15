@@ -784,46 +784,40 @@ function boot() {
   Lampa.Listener.follow('full', function (e) {
     if (e.type !== 'complite') return;
 
-    setTimeout(function () {
-      var container = document.querySelector('.full-start__buttons') || document.querySelector('.full-start-new__buttons') || document.querySelector('.full-details__buttons');
-      if (!container) return;
+    var container = document.querySelector('.full-start__buttons') || document.querySelector('.full-start-new__buttons') || document.querySelector('.full-details__buttons');
+    if (!container) return;
 
-      if (document.querySelector('.online-ultra-btn')) return;
+    if (document.querySelector('.online-ultra-btn')) return;
 
-      var btn = document.createElement('div');
-      btn.className = 'full-start__button selector online-ultra-btn';
-      btn.style.cssText = [
-        'background:linear-gradient(135deg,#e8a838,#f5c842)',
-        'color:#000',
-        'font-weight:800',
-        'display:flex',
-        'align-items:center',
-        'gap:.4em',
-        'border-radius:6px',
-      ].join(';');
+    var btn = document.createElement('div');
+    btn.className = 'full-start__button selector online-ultra-btn';
+    btn.style.cssText = [
+      'background:linear-gradient(135deg,#e8a838,#f5c842)',
+      'color:#000',
+      'font-weight:800',
+      'display:flex',
+      'align-items:center',
+      'gap:.4em',
+      'border-radius:20px',
+    ].join(';');
 
-      btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg> Online Ultra';
+    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg> Online Ultra';
 
-      $(btn).on('hover:enter', function () {
-        Lampa.Activity.push({
-          url: '',
-          title: (e.data.movie||e.data).original_title || 'Online Ultra',
-          component: 'online_ultra',
-          movie: e.data.movie || e.data,
-          page: 1,
-        });
+    $(btn).on('hover:enter', function () {
+      Lampa.Component.add('online_ultra', OnlineUltraComponent);
+      Lampa.Activity.push({
+        url: '',
+        title: 'Online Ultra',
+        component: 'online_ultra',
+        search: object.title,
+        search_one: object.title,
+        search_two: object.original_title,
+        movie: object,
+        page: 1,
       });
+    });
 
-      container.insertBefore(btn, container.firstChild);
-
-      try {
-        if (Lampa.Controller && Lampa.Controller.collectionReset) {
-          Lampa.Controller.collectionReset();
-        } else if (Lampa.Controller && Lampa.Controller.collectionSet) {
-          Lampa.Controller.collectionSet(container);
-        }
-      } catch (e) {}
-    })
+    e.object.activity.render().find('.view--torrent').after(btn);
   });
 
   /* Настройки */

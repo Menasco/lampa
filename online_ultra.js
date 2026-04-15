@@ -408,9 +408,9 @@ function getProxy(key) {
 function proxyUrl(url, key) {
   var mode = Lampa.Storage.get('ou_proxy_mode', '1');
 
-  var proxy1 = 'https://cors.nb557.workers.dev/';
-  var proxy2 = 'https://apn-latest.onrender.com/';
-  var proxy3 = 'https://cors557.deno.dev/';
+  var proxy1 = 'https://cors.nb557.workers.dev/?url=';
+  var proxy2 = 'https://apn-latest.onrender.com/?url=';
+  var proxy3 = 'https://cors557.deno.dev/?url=';
 
   var proxy = proxy1;
 
@@ -420,7 +420,7 @@ function proxyUrl(url, key) {
   // можно отключать прокси (если вдруг понадобится)
   if (mode === '0') return url;
 
-  return proxy + url;
+  return proxy + encodeURIComponent(url);
 }
 
 function ajax(url, done, fail) {

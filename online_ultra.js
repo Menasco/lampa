@@ -40,9 +40,9 @@ var SOURCES = {
 
     search: function (card, done, fail) {
       var p   = getProxy(this.proxy_key);
-      var url = p + this.api + '?api_token=' + this.token +
+      var url = 'https://corsproxy.io/?' + encodeURIComponent(this.api + '?api_token=' + this.token +
         (card.imdb_id ? '&imdb_id=' + card.imdb_id : '&kinopoisk_id=' + card.id) +
-        '&with_episodes=true';
+        '&with_episodes=true');
       ajax(url, function (d) {
         if (d && d.data && d.data.length) done(d.data[0]);
         else fail('Не найдено');

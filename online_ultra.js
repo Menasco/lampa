@@ -509,6 +509,8 @@ function OnlineUltraComponent(object) {
     return root;
   };
 
+  this.render = this.create;
+
   this.start = function () {
     var f = root.querySelector('[tabindex="0"]');
     if (f) f.focus();

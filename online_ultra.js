@@ -782,7 +782,7 @@ function boot() {
 
   /* Кнопка на карточке фильма */
   Lampa.Listener.follow('full', function (e) {
-    console.log(e);
+    if (e.type && e.type !== 'complete') return;
 
     setTimeout(function () {
       var container = document.querySelector('.full-start__buttons') || document.querySelector('.full-start-new__buttons') || document.querySelector('.full-details__buttons');
@@ -804,17 +804,25 @@ function boot() {
 
       btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg> Online Ultra';
 
-      btn.addEventListener('click', function () {
+      $(btn).on('hover:enter', function () {
         Lampa.Activity.push({
-          url:       '',
-          title:     (e.data.movie||e.data).original_title || (e.data.movie||e.data).title || (e.data.movie||e.data).name || 'Online Ultra',
+          url: '',
+          title: (e.data.movie||e.data).original_title || 'Online Ultra',
           component: 'online_ultra',
-          movie:     e.data.movie || e.data,
-          page:      1,
+          movie: e.data.movie || e.data,
+          page: 1,
         });
       });
 
       container.insertBefore(btn, container.firstChild);
+
+      try {
+        if (Lampa.Controller && Lampa.Controller.collectionReset) {
+          Lampa.Controller.collectionReset();
+        } else if (Lampa.Controller && Lampa.Controller.collectionSet) {
+          Lampa.Controller.collectionSet(container);
+        }
+      } catch (e) {}
     })
   });
 

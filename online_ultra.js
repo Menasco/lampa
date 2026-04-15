@@ -39,10 +39,16 @@ var SOURCES = {
     token: '3i40G5TSECmLF77oAqnEgbx61ZWaOYaE',
 
     search: function (card, done, fail) {
-      var p   = getProxy(this.proxy_key);
-      var url = 'https://corsproxy.io/?' + encodeURIComponent(this.api + '?api_token=' + this.token +
-        (card.imdb_id ? '&imdb_id=' + card.imdb_id : '&kinopoisk_id=' + card.id) +
-        '&with_episodes=true');
+      var url = this.api + '?api_token=' + this.token;
+
+      url += (card.imdb_id
+        ? '&imdb_id=' + card.imdb_id
+        : '&kinopoisk_id=' + card.id);
+
+      url += '&with_episodes=true';
+
+      url = proxyUrl(url, 'videocdn');
+      
       ajax(url, function (d) {
         if (d && d.data && d.data.length) done(d.data[0]);
         else fail('Не найдено');
@@ -102,9 +108,16 @@ var SOURCES = {
     proxy_key: 'ou_proxy_collaps',
 
     search: function (card, done, fail) {
-      var p   = getProxy(this.proxy_key);
-      var url = p + 'https://api.bhcesh.me/franchise/details?token=eedefb541aeba871dcfc756e6b31c02e&' +
-        (card.imdb_id ? 'imdb_id=' + card.imdb_id.replace('tt','') : 'kinopoisk_id=' + card.id);
+      var url = 'https://api.bhcesh.me/franchise/details?token=eedefb541aeba871dcfc756e6b31c02e'
+
+      url += (card.imdb_id
+        ? '&imdb_id=' + card.imdb_id
+        : '&kinopoisk_id=' + card.id);
+
+      url += '&with_episodes=true';
+
+      url = proxyUrl(url, 'collaps');
+
       ajax(url, function (d) {
         if (d && d.id) done(d);
         else fail('Не найдено');
@@ -125,9 +138,9 @@ var SOURCES = {
     },
 
     getStreams: function (item, info, season, ep, voice, done, fail) {
-      var p   = getProxy(this.proxy_key);
       var url = p + 'https://api.bhcesh.me/episode/details?token=eedefb541aeba871dcfc756e6b31c02e&id=' +
         item.id + '&season=' + (season||1) + '&episode=' + (ep||1);
+      url = proxyUrl(url, 'collaps');    
       ajax(url, function (d) {
         if (!d || (!d.hls && !d.url)) return fail('Нет потока');
         done([{ url: d.hls || d.url, quality: d.quality || '1080p', iframe: false, voice: voice || 'Дубляж', subs: null }]);
@@ -142,8 +155,13 @@ var SOURCES = {
 
     search: function (card, done, fail) {
       if (!card.imdb_id) return fail('Нет IMDB ID');
-      var p   = getProxy(this.proxy_key);
-      var url = p + 'https://apivb.info/api/videos.json?token=&imdb_id=' + card.imdb_id;
+
+      var url = 'https://apivb.info/api/videos.json?token='
+
+      url += card.imdb_id ? '&imdb_id=' + card.imdb_id : ''
+
+      url = proxyUrl(url, 'hdvb');
+
       ajax(url, function (d) {
         if (d && d.length) done(d[0]);
         else fail('Не найдено');
@@ -159,9 +177,9 @@ var SOURCES = {
     },
 
     getStreams: function (item, info, season, ep, voice, done, fail) {
-      var p   = getProxy(this.proxy_key);
       var url = p + 'https://apivb.info/api/videos.json?token=&id=' + item.id;
       if (season) url += '&s=' + season + '&e=' + ep;
+      url = proxyUrl(url, 'hdvb');
       ajax(url, function (d) {
         if (!d || !d.length) return fail('Нет потока');
         var streams = [];
@@ -180,9 +198,13 @@ var SOURCES = {
     proxy_key: 'ou_proxy_kodik',
 
     search: function (card, done, fail) {
-      var p   = getProxy(this.proxy_key);
-      var url = p + 'https://kodikapi.com/search?token=447d179e875efe37769f60cf92a2b405&with_material_data=true&limit=5&' +
-        (card.imdb_id ? 'imdb_id=' + card.imdb_id : 'title=' + encodeURIComponent(card.original_title || card.title || card.name || ''));
+
+      var url = 'https://kodikapi.com/search?token=447d179e875efe37769f60cf92a2b405&with_material_data=true&limit=5'
+
+      url += (card.imdb_id ? '&imdb_id=' + card.imdb_id : 'title=' + encodeURIComponent(card.original_title || card.title || card.name || ''));
+
+      url = proxyUrl(url, 'kodik');
+
       ajax(url, function (d) {
         if (d && d.results && d.results.length) done(d.results);
         else fail('Не найдено');
@@ -217,9 +239,12 @@ var SOURCES = {
     proxy_key: 'ou_proxy_alloha',
 
     search: function (card, done, fail) {
-      var p   = getProxy(this.proxy_key);
-      var url = p + 'https://api.alloha.tv/?token=04941a9a3ca3993f4d56d1aed7cdf93d&' +
-        (card.imdb_id ? 'imdb=' + card.imdb_id : 'kp=' + card.id);
+      var url = 'https://api.alloha.tv/?token=04941a9a3ca3993f4d56d1aed7cdf93d'
+
+      url += card.imdb_id ? 'imdb=' + card.imdb_id : 'kp=' + card.id;
+
+      url = proxyUrl(url, 'kodik');
+
       ajax(url, function (d) {
         if (d && d.data) done(d.data);
         else fail('Не найдено');
@@ -264,9 +289,15 @@ var SOURCES = {
     getEpisodeCount: function () { return 24; },
 
     getStreams: function (item, info, season, ep, voice, done, fail) {
-      var url = (item.proxy || '') + 'https://voidboost.net/embed/' + item.imdb + '?ref=lampa&ui=1';
+      var url = 'https://voidboost.net/embed/'
+
+      url += item.imdb + '?ref=lampa&ui=1';
+
       if (season) url += '&s=' + season + '&e=' + ep;
       if (voice) url += '&t=' + encodeURIComponent(voice);
+
+      url = proxyUrl(url, 'rezka');
+
       done([{ url: url, quality: 'Auto', iframe: true, voice: voice || 'Оригинал', subs: 'Multi' }]);
     },
   },
@@ -282,6 +313,8 @@ var SOURCES = {
     getStreams: function (item, info, season, ep, voice, done) {
       var base = 'https://vidsrc.to/embed/';
       var url  = season ? base+'tv/'+(item.imdb||item.tmdb)+'/'+season+'/'+ep : base+'movie/'+(item.imdb||item.tmdb);
+
+      url = proxyUrl(url, 'vidsrc');
       done([{ url: url, quality: 'Auto', iframe: true, voice: 'ENG', subs: 'ENG+RU' }]);
     },
   },
@@ -295,6 +328,7 @@ var SOURCES = {
     getStreams: function (item, info, season, ep, voice, done) {
       var base = 'https://player.autoembed.cc/embed/';
       var url  = season ? base+'tv/'+item.tmdb+'/'+season+'/'+ep : base+'movie/'+item.tmdb;
+      url = proxyUrl(url, 'autoembed');
       done([{ url: url, quality: 'Auto', iframe: true, voice: 'ENG', subs: 'Multi' }]);
     },
   },
@@ -309,6 +343,7 @@ var SOURCES = {
       var url = season
         ? 'https://www.2embed.cc/embedtv/'+item.tmdb+'&s='+season+'&e='+ep
         : 'https://www.2embed.cc/embed/'+item.tmdb;
+      url = proxyUrl(url, 'embed2');
       done([{ url: url, quality: 'Auto', iframe: true, voice: 'ENG', subs: 'Multi' }]);
     },
   },
@@ -323,6 +358,7 @@ var SOURCES = {
       var url = season
         ? 'https://player.smashy.stream/tv/'+item.tmdb+'?s='+season+'&e='+ep
         : 'https://player.smashy.stream/movie/'+item.tmdb;
+      url = proxyUrl(url, 'smashystream');  
       done([{ url: url, quality: 'Auto', iframe: true, voice: 'ENG', subs: 'Multi' }]);
     },
   },
@@ -338,6 +374,7 @@ var SOURCES = {
       var url = season
         ? 'https://vidlink.pro/tv/'+item.tmdb+'/'+season+'/'+ep+'?'+c
         : 'https://vidlink.pro/movie/'+item.tmdb+'?'+c;
+      url = proxyUrl(url, 'vidlink');    
       done([{ url: url, quality: 'Auto', iframe: true, voice: 'ENG', subs: 'Multi' }]);
     },
   },
@@ -352,6 +389,7 @@ var SOURCES = {
       var url = season
         ? 'https://vidsrc.nl/embed/tv/'+item.tmdb+'/'+season+'/'+ep
         : 'https://vidsrc.nl/embed/movie/'+item.tmdb;
+      url = proxyUrl(url, 'vidsrcnl');      
       done([{ url: url, quality: 'Auto', iframe: true, voice: 'ENG', subs: 'Multi' }]);
     },
   },
@@ -365,6 +403,24 @@ function getProxy(key) {
   var v = Lampa.Storage.get(key, '') || Lampa.Storage.get('ou_proxy_all', '');
   if (v && v.slice(-1) !== '/') v += '/';
   return v;
+}
+
+function proxyUrl(url, key) {
+  var mode = Lampa.Storage.get('ou_proxy_mode', '1');
+
+  var proxy1 = 'https://cors.nb557.workers.dev/';
+  var proxy2 = 'https://apn-latest.onrender.com/';
+  var proxy3 = 'https://cors557.deno.dev/';
+
+  var proxy = proxy1;
+
+  if (mode === '2') proxy = proxy2;
+  if (mode === '3') proxy = proxy3;
+
+  // можно отключать прокси (если вдруг понадобится)
+  if (mode === '0') return url;
+
+  return proxy + url;
 }
 
 function ajax(url, done, fail) {
@@ -577,27 +633,67 @@ function OnlineUltraComponent(object) {
   }
 
   /* ── Search ─────────────────────────────────────────────── */
-  function startSearch(key) {
-    var src = SOURCES[key];
-    if (!src) return showError('Источник не найден');
-    showLoader('Поиск в ' + src.name + '...');
+  var SourceRunner = {
+    run: function (keys, card, onDone, onFail) {
+      var i = 0;
 
-    src.search(card, function (data) {
-      ui.srcData = data;
-      ui.srcInfo = src.getInfo(data);
+      function next() {
+        if (i >= keys.length) return onFail('Нет доступных источников');
 
-      // Reset voice to first available
-      if (!ui.voice || ui.srcInfo.voices.indexOf(ui.voice) < 0) {
-        ui.voice = ui.srcInfo.voices[0] || null;
+        var key = keys[i++];
+        var src = SOURCES[key];
+
+        if (!src) return next();
+
+        src.search(card,
+          function (data) {
+            if (!data) return next();
+
+            try {
+              var info = src.getInfo(data);
+              return onDone({ key: key, src: src, data: data, info: info });
+            } catch (e) {
+              console.log('bad source parse', key, e);
+              next();
+            }
+          },
+          function (err) {
+            console.log('source failed', key, err);
+            next();
+          }
+        );
       }
 
-      // Update episode count
-      ui.epCount = src.getEpisodeCount(data, ui.srcInfo, ui.season, ui.voice) || 24;
+      next();
+    }
+  };
 
-      buildBody();
-    }, function (err) {
-      showError(src.name + ': ' + err);
-    });
+  function startSearch(key) {
+    var ruKeys = Object.keys(SOURCES).filter(k => SOURCES[k].lang === 'RU');
+    var engKeys = Object.keys(SOURCES).filter(k => SOURCES[k].lang === 'ENG');
+
+    var list = SOURCES[key].lang === 'ENG'
+      ? engKeys
+      : ruKeys;
+
+    showLoader('Поиск источников...');
+
+    SourceRunner.run(list, card,
+      function (result) {
+        ui.srcKey = result.key;
+        ui.srcData = result.data;
+        ui.srcInfo = result.info;
+        ui.src = result.src;
+
+        ui.voice = ui.srcInfo.voices?.[0] || null;
+        ui.epCount = 24;
+
+        buildBody();
+      },
+      function () {
+        showError('Ни один источник не ответил');
+      }
+    );
   }
 
   /* ── Build body UI ──────────────────────────────────────── */
@@ -795,6 +891,25 @@ function boot() {
 
   /* Компонент */
   Lampa.Component.add('online_ultra', OnlineUltraComponent);
+
+  Lampa.SettingsApi.addParam({
+    component: 'online_ultra',
+    param: {
+      name: 'ou_proxy_mode',
+      type: 'select',
+      values: {
+        '1': 'Proxy 1 (Cloudflare)',
+        '2': 'Proxy 2 (Render)',
+        '3': 'Proxy 3 (Deno)',
+        '0': 'Direct (без прокси)'
+      },
+      default: '1'
+    },
+    field: {
+      name: 'Proxy режим',
+      description: 'Если есть CORS — переключи прокси'
+    }
+  });
 
   /* Кнопка на карточке фильма */
   Lampa.Listener.follow('full', function (e) {

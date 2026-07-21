@@ -19,29 +19,57 @@
   })();
   var OU_HOST = OU_BASE.slice(0, -1);
 
-  // Online Ultra: пометки в меню «Источник» и сортировка «проверенные сверху».
-  // Сервер дописывает качество (напр. «Filmix ~ 2160p») только к источникам,
-  // прошедшим живую проверку — по этому признаку и отличаем. Пока проверка идёт
-  // (ou_checking), неподтверждённые помечаются «проверяется», а не «не проверен».
+  // ===== Online Ultra: реальные замеры на устройстве =====
+  // Меряем время «клик по варианту -> ссылка получена и отдана плееру» (это и есть
+  // основная задержка: сервер достаёт поток с балансера). Копим по каждому источнику.
   var ou_checking = false;
+  var ou_pending = null;
+  function ouResolveStart() {
+    try { ou_pending = { key: (Lampa.Storage.get('active_balanser', '') || ''), t: Date.now() }; }
+    catch (e) { ou_pending = null; }
+  }
+  function ouResolveDone(ok) {
+    try {
+      if (!ou_pending) return;
+      var p = ou_pending; ou_pending = null;
+      if (!p.key) return;
+      var stats = Lampa.Storage.get('ou_stats', {}); if (!stats || typeof stats !== 'object') stats = {};
+      var s = stats[p.key] || { ms: 0, ok: 0, fail: 0 };
+      if (ok) { var ms = Date.now() - p.t; if (ms < 0) ms = 0; if (ms > 60000) ms = 60000; s.ms = s.ok ? Math.round(s.ms * 0.6 + ms * 0.4) : ms; s.ok++; }
+      else { s.fail++; }
+      s.ts = Date.now(); stats[p.key] = s;
+      Lampa.Storage.set('ou_stats', stats);
+    } catch (e) {}
+  }
+  function ouBadge(color, text) { return ' <span style="color:' + color + ';font-size:.8em;white-space:nowrap">' + text + '</span>'; }
+  // Метки: сначала реальный опыт на устройстве, потом слабый серверный сигнал.
   function ouSortItems(sources, filter_sources, balanser, checking) {
-    var items = filter_sources.map(function (e) {
+    var stats = {};
+    try { stats = Lampa.Storage.get('ou_stats', {}) || {}; } catch (e) {}
+    var items = filter_sources.map(function (e, i) {
       var nm = String(sources[e].name || e);
-      var ok = /\d{3,4}p|4K/i.test(nm);
-      var badge = ok
-        ? ' <span style="color:#5ad17a;font-size:.8em;white-space:nowrap">\u25cf \u043f\u0440\u043e\u0432\u0435\u0440\u0435\u043d</span>'
-        : checking
-          ? ' <span style="color:#f5c842;font-size:.8em;white-space:nowrap">\u25cf \u043f\u0440\u043e\u0432\u0435\u0440\u044f\u0435\u0442\u0441\u044f\u2026</span>'
-          : ' <span style="color:#ff6b6b;font-size:.8em;white-space:nowrap">\u25cf \u043d\u0435 \u043f\u0440\u043e\u0432\u0435\u0440\u0435\u043d</span>';
-      return {
-        title: nm + badge,
-        source: e,
-        selected: e == balanser,
-        ghost: !sources[e].show,
-        ou_ok: ok
-      };
+      var st = stats[e];
+      var rank = 3, ms = 999999, badge = '';
+      if (st && st.ok) {
+        ms = st.ms; var sec = Math.max(1, Math.round(st.ms / 1000));
+        if (st.ms <= 3500) { rank = 0; badge = ouBadge('#5ad17a', '\u26a1 ~' + sec + '\u0441'); }          // ⚡ ~Nс (быстро)
+        else { rank = 1; badge = ouBadge('#f5c842', '\ud83d\udc22 ~' + sec + '\u0441'); }                  // 🐢 ~Nс (медленно)
+        if (st.fail) badge += ouBadge('#ff6b6b', '\u00b7 \u0431\u044b\u0432\u0430\u043b\u043e \u0441\u0431\u043e\u0439'); // · бывало сбой
+      } else if (st && st.fail) {
+        rank = 5; badge = ouBadge('#ff6b6b', '\u2715 \u043d\u0435 \u043e\u0442\u043a\u0440\u044b\u043b\u0441\u044f \u0443 \u0442\u0435\u0431\u044f'); // ✕ не открылся у тебя
+      } else if (/\d{3,4}p|4K/i.test(nm)) {
+        rank = 2; badge = ouBadge('#9aa0a6', '\u25cb \u043f\u043e\u0442\u043e\u043a\u0438 \u0435\u0441\u0442\u044c'); // ○ потоки есть (серый, не пробовал)
+      } else if (checking) {
+        rank = 4; badge = ouBadge('#f5c842', '\u25cf \u043f\u0440\u043e\u0432\u0435\u0440\u044f\u0435\u0442\u0441\u044f\u2026'); // ● проверяется…
+      }
+      return { title: nm + badge, source: e, selected: e == balanser, ghost: !sources[e].show, ou_rank: rank, ou_ms: ms, ou_idx: i };
     });
-    return items.filter(function (i) { return i.ou_ok; }).concat(items.filter(function (i) { return !i.ou_ok; }));
+    items.sort(function (a, b) {
+      if (a.ou_rank !== b.ou_rank) return a.ou_rank - b.ou_rank;
+      if (a.ou_ms !== b.ou_ms) return a.ou_ms - b.ou_ms;
+      return a.ou_idx - b.ou_idx;
+    });
+    return items;
   }
 
   var Defined = {
@@ -824,6 +852,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       var _this5 = this;
       this.draw(videos, {
         onEnter: function onEnter(item, html) {
+          ouResolveStart();
           _this5.getFileUrl(item, function(json, json_call) {
             if (json && json.url) {
               var playlist = [];
@@ -890,7 +919,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
               if (first.url) {
                 var element = first;
 				element.isonline = true;
-                
+                ouResolveDone(true);
                 Lampa.Player.play(element);
                 Lampa.Player.playlist(playlist);
 				if(element.subtitles_call) _this5.loadSubtitles(element.subtitles_call)
@@ -898,9 +927,10 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
                 item.mark();
                 _this5.updateBalanser(balanser);
               } else {
+                ouResolveDone(false);
                 Lampa.Noty.show(Lampa.Lang.translate('lampac_nolink'));
               }
-            } else Lampa.Noty.show(Lampa.Lang.translate('lampac_nolink'));
+            } else { ouResolveDone(false); Lampa.Noty.show(Lampa.Lang.translate('lampac_nolink')); }
           }, true);
         },
         onContextMenu: function onContextMenu(item, html, data, call) {

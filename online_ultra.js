@@ -45,21 +45,37 @@
     if (p.key && !ok) ouRecord(p.key, false);
   }
   // Успех засчитывается только когда видео РЕАЛЬНО пошло: плеер двигает
-  // element.timeline.time лишь при воспроизведении. Битое видео (00:00) за 45с
-  // таймлайн не сдвинет — источнику запишется сбой.
+  // element.timeline.time лишь при воспроизведении. Схема write-ahead: при старте
+  // плеера сразу пишем сбой (битое 00:00 так и останется сбоем, даже если браузер
+  // приостановит таймеры или пользователь выйдет), а когда таймлайн сдвинулся —
+  // запись повышается до успеха с временем резолва.
+  function ouUpgrade(key, ms) {
+    try {
+      var stats = Lampa.Storage.get('ou_stats', {}); if (!stats || typeof stats !== 'object') stats = {};
+      var s = stats[key] || { ms: 0, ok: 0, fail: 0 };
+      if (s.fail > 0) s.fail--;
+      if (ms < 0) ms = 0; if (ms > 90000) ms = 90000;
+      s.ms = s.ok ? Math.round(s.ms * 0.6 + ms * 0.4) : ms;
+      s.ok++; s.ts = Date.now();
+      stats[key] = s;
+      Lampa.Storage.set('ou_stats', stats);
+    } catch (e) {}
+  }
   function ouWatchPlayback(element) {
     try {
       if (!ou_pending) return;
       var p = ou_pending; ou_pending = null;
       if (!p.key) return;
+      var resolveMs = Date.now() - p.t;
       var tl = element && element.timeline;
-      if (!tl) return ouRecord(p.key, true, Date.now() - p.t);
+      if (!tl) return; // нет таймлайна — не судим ни в плюс, ни в минус
+      ouRecord(p.key, false); // провизорный сбой (write-ahead)
       var t0 = tl.time || 0, tries = 0;
       var iv = setInterval(function () {
         tries++;
         var cur = tl.time || 0;
-        if (cur > 0 && cur !== t0) { clearInterval(iv); ouRecord(p.key, true, Date.now() - p.t); }
-        else if (tries >= 45) { clearInterval(iv); ouRecord(p.key, false); }
+        if (cur > 0 && cur !== t0) { clearInterval(iv); ouUpgrade(p.key, resolveMs); }
+        else if (tries >= 120) clearInterval(iv);
       }, 1000);
     } catch (e) {}
   }
@@ -74,7 +90,7 @@
       var rank = 3, ms = 999999, badge = '';
       if (st && st.ok) {
         ms = st.ms; var sec = Math.max(1, Math.round(st.ms / 1000));
-        if (st.ms <= 5000) { rank = 0; badge = ouBadge('#5ad17a', '\u26a1 ~' + sec + '\u0441'); }          // ⚡ ~Nс (быстро)
+        if (st.ms < 10000) { rank = 0; badge = ouBadge('#5ad17a', '\u26a1 ~' + sec + '\u0441'); }          // ⚡ ~Nс (быстро)
         else { rank = 1; badge = ouBadge('#f5c842', '\ud83d\udc22 ~' + sec + '\u0441'); }                  // 🐢 ~Nс (медленно)
         if (st.fail) badge += ouBadge('#ff6b6b', '\u00b7 \u0431\u044b\u0432\u0430\u043b\u043e \u0441\u0431\u043e\u0439'); // · бывало сбой
       } else if (st && st.fail) {

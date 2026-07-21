@@ -28,17 +28,39 @@
     try { ou_pending = { key: (Lampa.Storage.get('active_balanser', '') || ''), t: Date.now() }; }
     catch (e) { ou_pending = null; }
   }
+  function ouRecord(key, ok, ms) {
+    try {
+      var stats = Lampa.Storage.get('ou_stats', {}); if (!stats || typeof stats !== 'object') stats = {};
+      var s = stats[key] || { ms: 0, ok: 0, fail: 0 };
+      if (ok) { if (ms < 0) ms = 0; if (ms > 90000) ms = 90000; s.ms = s.ok ? Math.round(s.ms * 0.6 + ms * 0.4) : ms; s.ok++; }
+      else { s.fail++; }
+      s.ts = Date.now(); stats[key] = s;
+      Lampa.Storage.set('ou_stats', stats);
+    } catch (e) {}
+  }
+  // Неудача резолва: ссылку на поток получить не удалось.
   function ouResolveDone(ok) {
+    if (!ou_pending) return;
+    var p = ou_pending; ou_pending = null;
+    if (p.key && !ok) ouRecord(p.key, false);
+  }
+  // Успех засчитывается только когда видео РЕАЛЬНО пошло: плеер двигает
+  // element.timeline.time лишь при воспроизведении. Битое видео (00:00) за 45с
+  // таймлайн не сдвинет — источнику запишется сбой.
+  function ouWatchPlayback(element) {
     try {
       if (!ou_pending) return;
       var p = ou_pending; ou_pending = null;
       if (!p.key) return;
-      var stats = Lampa.Storage.get('ou_stats', {}); if (!stats || typeof stats !== 'object') stats = {};
-      var s = stats[p.key] || { ms: 0, ok: 0, fail: 0 };
-      if (ok) { var ms = Date.now() - p.t; if (ms < 0) ms = 0; if (ms > 60000) ms = 60000; s.ms = s.ok ? Math.round(s.ms * 0.6 + ms * 0.4) : ms; s.ok++; }
-      else { s.fail++; }
-      s.ts = Date.now(); stats[p.key] = s;
-      Lampa.Storage.set('ou_stats', stats);
+      var tl = element && element.timeline;
+      if (!tl) return ouRecord(p.key, true, Date.now() - p.t);
+      var t0 = tl.time || 0, tries = 0;
+      var iv = setInterval(function () {
+        tries++;
+        var cur = tl.time || 0;
+        if (cur > 0 && cur !== t0) { clearInterval(iv); ouRecord(p.key, true, Date.now() - p.t); }
+        else if (tries >= 45) { clearInterval(iv); ouRecord(p.key, false); }
+      }, 1000);
     } catch (e) {}
   }
   function ouBadge(color, text) { return ' <span style="color:' + color + ';font-size:.8em;white-space:nowrap">' + text + '</span>'; }
@@ -52,7 +74,7 @@
       var rank = 3, ms = 999999, badge = '';
       if (st && st.ok) {
         ms = st.ms; var sec = Math.max(1, Math.round(st.ms / 1000));
-        if (st.ms <= 3500) { rank = 0; badge = ouBadge('#5ad17a', '\u26a1 ~' + sec + '\u0441'); }          // ⚡ ~Nс (быстро)
+        if (st.ms <= 5000) { rank = 0; badge = ouBadge('#5ad17a', '\u26a1 ~' + sec + '\u0441'); }          // ⚡ ~Nс (быстро)
         else { rank = 1; badge = ouBadge('#f5c842', '\ud83d\udc22 ~' + sec + '\u0441'); }                  // 🐢 ~Nс (медленно)
         if (st.fail) badge += ouBadge('#ff6b6b', '\u00b7 \u0431\u044b\u0432\u0430\u043b\u043e \u0441\u0431\u043e\u0439'); // · бывало сбой
       } else if (st && st.fail) {
@@ -919,7 +941,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
               if (first.url) {
                 var element = first;
 				element.isonline = true;
-                ouResolveDone(true);
+                ouWatchPlayback(element);
                 Lampa.Player.play(element);
                 Lampa.Player.playlist(playlist);
 				if(element.subtitles_call) _this5.loadSubtitles(element.subtitles_call)

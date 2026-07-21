@@ -1,47 +1,41 @@
 /**
  * ╔════════════════════════════════════════════════════════════════════╗
- * ║                    ONLINE ULTRA · plugin for Lampa                 ║
+ * ║                 ONLINE ULTRA · plugin for Lampa (v4)               ║
  * ║                                                                    ║
- * ║  Умный фронт над проверенным движком онлайн-балансеров.            ║
+ * ║  Lampac-клиент: источники берутся с сервера-агрегатора (бэкенда),  ║
+ * ║  который сам обходит 20+ балансеров (Rezka, Kodik, Filmix,         ║
+ * ║  Alloha, Collaps, KinoPub, HDVB, VK, Rutube и др.).               ║
  * ║                                                                    ║
- * ║   • Свой быстрый источник Collaps — фильмы играются напрямую       ║
- * ║     (прямой .m3u8, все озвучки как аудиодорожки в плеере).         ║
- * ║   • Сериалы и «все источники» — через движок online_mod           ║
- * ║     (21 балансер, сам обновляется, корректные сезоны/серии).       ║
- * ║   • Нерабочие источники не показываются: если Collaps ничего       ║
- * ║     не нашёл — вкладка просто не появится.                         ║
- * ║   • Прокси настраивается (по умолчанию: прямой + авто-фолбэк).     ║
+ * ║   • Много источников, и показываются только те, где фильм есть.    ║
+ * ║   • HDRezka без «требуется авторизация» (её решает сервер).        ║
+ * ║   • Кнопка на карточке открывает сайдбар источников → выбор        ║
+ * ║     озвучки / сезона / серии.                                      ║
+ * ║   • Бэкенд настраивается (Настройки → Online Ultra).               ║
  * ║                                                                    ║
- * ║  Установка: Lampa → Настройки → Расширения → добавить URL этого    ║
- * ║  файла. Плагин сам подтянет движок при первом запуске.            ║
+ * ║  Установка: Lampa → Настройки → Расширения → добавить URL файла.   ║
  * ╚════════════════════════════════════════════════════════════════════╝
  */
 (function () {
   'use strict';
 
   var OU = {
-    version: '3.0',
+    version: '4.0',
     title: 'Online Ultra',
-    // Проверенный движок online_mod (nb557) — 21 балансер, авто-обновляется.
-    engine_url_default: 'https://nb557.github.io/plugins/online_mod.js',
-    // Собственный источник Collaps (bhcesh) — прямой поток, проверено рабочий.
-    collaps_api: 'https://api.bhcesh.me/franchise/details',
-    collaps_token_default: 'eedefb541aeba871dcfc756e6b31c02e',
-    // CORS-прокси (используются как фолбэк на web, где прямой запрос режет CORS).
-    proxies: [
-      'https://cors.nb557.workers.dev/?url=',
-      'https://cors557.deno.dev/?url=',
-      'https://api.apbugall.org/?url='
-    ]
+    // Lampac-бэкенд по умолчанию (тот же движок, что делает akter-black таким полным).
+    backend_default: 'https://akter-black.com/'
   };
 
-  /* ═══════════════ storage / helpers ═══════════════ */
+  /* ═══════════════ helpers ═══════════════ */
 
   function L() { return window.Lampa; }
   function get(k, d) { try { return L().Storage.get(k, d); } catch (e) { return d; } }
-  function set(k, v) { try { L().Storage.set(k, v); } catch (e) {} }
-  function token() { return get('ou_collaps_token', OU.collaps_token_default) || OU.collaps_token_default; }
-  function engineUrl() { return get('ou_engine_url', OU.engine_url_default) || OU.engine_url_default; }
+  function notify(m) { try { L().Noty.show(m); } catch (e) {} }
+
+  function backend() {
+    var b = (get('ou_backend', OU.backend_default) || OU.backend_default).trim();
+    if (b.slice(-1) !== '/') b += '/';
+    return b;
+  }
 
   function el(tag, cls, html) {
     var n = document.createElement(tag);
@@ -56,156 +50,96 @@
     });
   }
 
-  function notify(msg) { try { L().Noty.show(msg); } catch (e) {} }
-
-  /* ═══════════════ networking (native on TV, fetch/proxy fallback on web) ═══════════════ */
-
-  function proxied(url, index) {
-    var p = OU.proxies[index] || OU.proxies[0];
-    return p + encodeURIComponent(url);
+  function nav() {
+    try { if (typeof Navigator !== 'undefined' && Navigator && Navigator.move) return Navigator; } catch (e) {}
+    if (window.Lampa && Lampa.Navigator && Lampa.Navigator.move) return Lampa.Navigator;
+    return null;
   }
 
-  // Build the ordered list of URLs to try for one logical request.
-  function attempts(url) {
-    var mode = get('ou_proxy', '0'); // 0 = direct first, 1..3 = proxy N first
-    var list = [];
-    if (mode === '0') {
-      list.push(url);
-      list.push(proxied(url, 0)); // auto-fallback through a proxy if direct is blocked / CORS
-    } else {
-      var idx = parseInt(mode, 10) - 1;
-      list.push(proxied(url, idx));
-      list.push(url); // then direct
-    }
-    return list;
-  }
+  /* ═══════════════ networking (JSON) ═══════════════ */
 
-  function requestOnce(url, asText, ok, err) {
-    // Prefer Lampa's native request layer — on Android TV it bypasses browser CORS.
+  function api(url, done, fail) {
     if (window.Lampa && Lampa.Reguest) {
       try {
-        var net = new Lampa.Reguest();
-        if (net.timeout) net.timeout(20000);
-        net.native(url, function (r) { ok(r); }, function () { fetchFallback(); }, false, asText ? { dataType: 'text' } : {});
+        var n = new Lampa.Reguest();
+        if (n.timeout) n.timeout(20000);
+        n.native(url, function (j) {
+          if (typeof j === 'string') { try { j = JSON.parse(j); } catch (e) {} }
+          done(j);
+        }, function () { fetchApi(url, done, fail); }, false, { dataType: 'json' });
         return;
-      } catch (e) { /* fall through */ }
-    }
-    fetchFallback();
-
-    function fetchFallback() {
-      try {
-        fetch(url).then(function (r) { return asText ? r.text() : r.json(); }).then(ok).catch(function () { err(); });
-      } catch (e) { err(); }
-    }
-  }
-
-  function request(url, asText, done, fail) {
-    var urls = attempts(url);
-    var i = 0;
-    (function next() {
-      if (i >= urls.length) return fail && fail('net');
-      requestOnce(urls[i++], asText, function (r) { done(r); }, next);
-    })();
-  }
-
-  /* ═══════════════ Collaps (bhcesh) — verified working source ═══════════════ */
-
-  var Collaps = {
-    // Build the id query Collaps accepts: imdb_id WITHOUT tt, or kinopoisk_id.
-    idParam: function (card) {
-      if (card.imdb_id) return 'imdb_id=' + String(card.imdb_id).replace(/^tt/i, '');
-      if (card.kinopoisk_id) return 'kinopoisk_id=' + card.kinopoisk_id;
-      if (card.kp_id) return 'kinopoisk_id=' + card.kp_id;
-      return '';
-    },
-
-    lookup: function (card, done, fail) {
-      var idp = this.idParam(card);
-      if (!idp) return fail('noid');
-      var url = OU.collaps_api + '?token=' + encodeURIComponent(token()) + '&' + idp;
-      request(url, false, function (d) {
-        if (d && d.id && d.type && d.name && d.name !== 'Not Found' && d.name !== 'Bad Request') done(d);
-        else fail('notfound');
-      }, function () { fail('net'); });
-    },
-
-    // Extract the direct .m3u8 from a movie embed page (all dubs are audio tracks inside it).
-    movieStream: function (data, done, fail) {
-      var embed = data.iframe_url;
-      if (!embed) return fail('noembed');
-      request(embed, true, function (html) {
-        var m = /hls\s*[:=]\s*["']([^"']+\.m3u8[^"']*)["']/i.exec(html) ||
-                /["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/i.exec(html);
-        if (m && m[1]) done(m[1]);
-        else fail('nostream');
-      }, function () { fail('net'); });
-    }
-  };
-
-  /* ═══════════════ Engine (online_mod) auto-loader ═══════════════ */
-
-  var Engine = {
-    requested: false,
-
-    present: function () {
-      if (window.__ou_engine_ready) return true;
-      // The engine keeps a "last balancer" key and registers its own online button.
-      try {
-        if (L().Storage.get('online_mod_balanser', false)) return true;
-        if (L().Storage.get('online_mod_last_balanser', false)) return true;
-      } catch (e) {}
-      return !!document.querySelector('script[src*="online_mod"]');
-    },
-
-    load: function (cb) {
-      if (this.present()) { window.__ou_engine_ready = true; return cb && cb(true); }
-      if (get('ou_engine', '1') !== '1') return cb && cb(false);
-      if (this.requested) { // already loading — poll briefly
-        var tries = 0, self = this;
-        var iv = setInterval(function () {
-          if (self.present() || ++tries > 40) { clearInterval(iv); cb && cb(self.present()); }
-        }, 250);
-        return;
-      }
-      this.requested = true;
-      var s = document.createElement('script');
-      s.src = engineUrl();
-      s.async = true;
-      s.onload = function () { window.__ou_engine_ready = true; setTimeout(function () { cb && cb(true); }, 400); };
-      s.onerror = function () { cb && cb(false); };
-      (document.body || document.head).appendChild(s);
-    },
-
-    open: function (card) {
-      this.load(function (ok) {
-        if (!ok) { notify('Не удалось загрузить движок источников. Проверьте интернет/прокси.'); return; }
-        try {
-          L().Activity.push({
-            url: '',
-            title: 'Online',
-            component: 'online_mod',
-            search: card.title || card.name,
-            search_one: card.title || card.name,
-            search_two: card.original_title || card.original_name,
-            movie: card,
-            page: 1
-          });
-        } catch (e) {
-          notify('Движок загружается, попробуйте ещё раз через пару секунд.');
-        }
-      });
-    },
-
-    // One-time, non-destructive defaults tuned for "abroad, no VPN".
-    tune: function () {
-      if (get('ou_tuned', '') === OU.version) return;
-      try {
-        if (get('online_mod_save_last_balanser', null) === null) set('online_mod_save_last_balanser', true);
-        if (!get('online_mod_balanser', '')) set('online_mod_balanser', 'collaps');
-        set('ou_tuned', OU.version);
       } catch (e) {}
     }
-  };
+    fetchApi(url, done, fail);
+  }
+
+  function fetchApi(url, done, fail) {
+    try {
+      fetch(url).then(function (r) { return r.json(); }).then(done).catch(function () { fail && fail(); });
+    } catch (e) { fail && fail(); }
+  }
+
+  /* ═══════════════ Lampac API ═══════════════ */
+
+  function isSerial(m) { return !!(m.name || m.number_of_seasons || m.first_air_date || m.seasons); }
+
+  function yearOf(m) {
+    var d = m.release_date || m.first_air_date || '';
+    if (d) return String(d).slice(0, 4);
+    return m.year || '';
+  }
+
+  function baseQuery(m) {
+    var q = ['id=' + (m.id || '')];
+    q.push('serial=' + (isSerial(m) ? 1 : 0));
+    if (m.imdb_id) q.push('imdb_id=' + m.imdb_id);
+    if (m.kinopoisk_id) q.push('kinopoisk_id=' + m.kinopoisk_id);
+    q.push('title=' + encodeURIComponent(m.title || m.name || ''));
+    q.push('original_title=' + encodeURIComponent(m.original_title || m.original_name || ''));
+    var y = yearOf(m);
+    if (y) q.push('year=' + y);
+    if (m.original_language) q.push('original_language=' + m.original_language);
+    return q.join('&');
+  }
+
+  // Resolve imdb_id / kinopoisk_id if the card lacks them — many balancers need them.
+  function externalids(m, cb) {
+    if (m.imdb_id && m.kinopoisk_id) return cb();
+    var url = backend() + 'externalids?id=' + (m.id || '') + '&serial=' + (isSerial(m) ? 1 : 0) +
+      (m.imdb_id ? '&imdb_id=' + m.imdb_id : '') + (m.kinopoisk_id ? '&kinopoisk_id=' + m.kinopoisk_id : '');
+    api(url, function (j) {
+      if (j && typeof j === 'object') for (var k in j) if (j[k]) m[k] = j[k];
+      cb();
+    }, cb);
+  }
+
+  // The source list ("sidebar") — only balancers that have this title.
+  // NB: no life=true — that switches Lampac to async memkey-polling mode; we want the full list at once.
+  function events(m, done, fail) {
+    api(backend() + 'lite/events?' + baseQuery(m), function (list) {
+      done(Array.isArray(list) ? list : []);
+    }, fail);
+  }
+
+  function withRjson(url) {
+    if (/rjson=/i.test(url)) return url;
+    return url + (url.indexOf('?') > -1 ? '&' : '?') + 'rjson=true';
+  }
+
+  function sourceUrl(baseUrl, m) {
+    return baseUrl + (baseUrl.indexOf('?') > -1 ? '&' : '?') + baseQuery(m) + '&rjson=true';
+  }
+
+  function openLampac(url, done, fail) {
+    api(withRjson(url), function (res) {
+      var data = res && (res.data || (Array.isArray(res) ? res : null));
+      done({ type: (res && res.type) || '', data: Array.isArray(data) ? data : [] });
+    }, fail);
+  }
+
+  // A data item is playable if it carries a stream (any method).
+  function playable(d) { return !!(d && (d.stream || (d.method === 'play' && d.url))); }
+  function streamOf(d) { return d.stream || d.url; }
 
   /* ═══════════════ styles ═══════════════ */
 
@@ -214,84 +148,63 @@
     var s = el('style');
     s.id = 'ou-style';
     s.textContent = [
-      '.ou{padding:2em 2.4em;color:#fff;font-family:inherit;max-width:1100px}',
-      '.ou-head{display:flex;align-items:center;gap:.7em;margin-bottom:1.5em;padding-bottom:1em;border-bottom:1px solid rgba(255,255,255,.08)}',
-      '.ou-logo{display:inline-flex;align-items:center;justify-content:center;width:2.1em;height:2.1em;border-radius:.55em;background:linear-gradient(135deg,#e8a838,#f5c842);color:#111;font-weight:900;flex:none;box-shadow:0 4px 18px rgba(232,168,56,.35)}',
-      '.ou-h-title{font-size:1.15em;font-weight:800;letter-spacing:.02em}',
-      '.ou-h-sub{font-size:.72em;color:rgba(255,255,255,.45);margin-top:.15em}',
-      '.ou-card{background:rgba(255,255,255,.035);border:1px solid rgba(255,255,255,.07);border-radius:.8em;padding:1.3em 1.4em;margin-bottom:1.1em}',
-      '.ou-src{display:flex;align-items:center;gap:.7em;margin-bottom:.2em}',
-      '.ou-src-name{font-weight:700;font-size:1em}',
-      '.ou-ok{font-size:.66em;font-weight:800;color:#0b0b0b;background:#5ad17a;border-radius:.4em;padding:.2em .55em;letter-spacing:.04em}',
-      '.ou-badge{font-size:.66em;color:rgba(255,255,255,.75);background:rgba(255,255,255,.08);border-radius:.4em;padding:.2em .55em}',
-      '.ou-lbl{font-size:.7em;text-transform:uppercase;letter-spacing:.14em;color:rgba(255,255,255,.4);margin:1.1em 0 .55em}',
-      '.ou-chips{display:flex;flex-wrap:wrap;gap:.45em}',
-      '.ou-chip{padding:.4em 1em;border-radius:.5em;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.05);color:#dcdcdc;font-size:.84em;cursor:pointer;transition:all .15s;outline:none}',
-      '.ou-chip:hover,.ou-chip:focus{border-color:#e8a838;color:#fff;background:rgba(232,168,56,.12)}',
-      '.ou-chip.on{background:#e8a838;border-color:#e8a838;color:#111;font-weight:700}',
-      '.ou-eps{display:flex;flex-wrap:wrap;gap:.4em}',
-      '.ou-ep{width:2.9em;height:2.9em;display:flex;align-items:center;justify-content:center;border-radius:.5em;border:1px solid rgba(255,255,255,.12);background:rgba(255,255,255,.05);color:#dcdcdc;font-size:.86em;cursor:pointer;transition:all .15s;outline:none}',
-      '.ou-ep:hover,.ou-ep:focus{border-color:#e8a838;color:#fff}',
-      '.ou-ep.on{background:#e8a838;border-color:#e8a838;color:#111;font-weight:700}',
-      '.ou-actions{display:flex;flex-wrap:wrap;gap:.7em;margin-top:1.4em}',
-      '.ou-btn{display:inline-flex;align-items:center;gap:.5em;padding:.75em 1.7em;border-radius:.6em;font-size:.92em;font-weight:800;cursor:pointer;transition:transform .1s,box-shadow .1s,background .15s;outline:none;border:1px solid transparent}',
-      '.ou-btn.primary{background:linear-gradient(135deg,#e8a838,#f5c842);color:#111;box-shadow:0 4px 18px rgba(232,168,56,.32)}',
-      '.ou-btn.primary:hover,.ou-btn.primary:focus{transform:translateY(-1px);box-shadow:0 7px 24px rgba(232,168,56,.45)}',
-      '.ou-btn.ghost{background:rgba(255,255,255,.06);border-color:rgba(255,255,255,.14);color:#eaeaea}',
-      '.ou-btn.ghost:hover,.ou-btn.ghost:focus{border-color:#e8a838;color:#fff;background:rgba(232,168,56,.1)}',
-      '.ou-note{font-size:.78em;color:rgba(255,255,255,.5);line-height:1.55;margin-top:1em}',
-      '.ou-note b{color:#e8a838}',
+      '.ou{padding:1.5em 2em;color:#fff;font-family:inherit;max-width:1100px}',
+      '.ou-head{display:flex;align-items:center;gap:.7em;margin-bottom:.4em}',
+      '.ou-logo{display:inline-flex;align-items:center;justify-content:center;width:1.9em;height:1.9em;border-radius:.5em;background:linear-gradient(135deg,#e8a838,#f5c842);color:#111;font-weight:900;font-size:.9em;flex:none}',
+      '.ou-h-title{font-size:1.05em;font-weight:800}',
+      '.ou-crumb{font-size:.8em;color:rgba(255,255,255,.45);margin:.1em 0 1.1em;min-height:1.2em}',
+      '.ou-crumb b{color:#e8a838}',
+      '.ou-row{display:flex;align-items:center;gap:.9em;padding:.85em 1.1em;margin-bottom:.5em;border-radius:.6em;background:rgba(255,255,255,.045);border:1px solid rgba(255,255,255,.06);cursor:pointer;transition:all .14s;outline:none}',
+      '.ou-row.focus,.ou-row:hover,.ou-row:focus{background:rgba(232,168,56,.14);border-color:#e8a838}',
+      '.ou-row-ic{width:1.9em;height:1.9em;flex:none;display:flex;align-items:center;justify-content:center;border-radius:.4em;background:rgba(255,255,255,.08);font-size:.95em}',
+      '.ou-row.play .ou-row-ic{background:linear-gradient(135deg,#e8a838,#f5c842);color:#111}',
+      '.ou-row-body{flex:1;min-width:0}',
+      '.ou-row-title{font-size:.96em;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+      '.ou-row-sub{font-size:.76em;color:rgba(255,255,255,.5);margin-top:.15em}',
+      '.ou-row-badge{font-size:.68em;color:#0b0b0b;background:#5ad17a;border-radius:.35em;padding:.15em .5em;font-weight:800;flex:none}',
       '.ou-state{text-align:center;padding:3em 1em;color:rgba(255,255,255,.55)}',
-      '.ou-spin{display:block;width:2.4em;height:2.4em;margin:0 auto 1em;border:.22em solid rgba(255,255,255,.15);border-top-color:#e8a838;border-radius:50%;animation:ou-rot .8s linear infinite}',
-      '.ou-err-ic{font-size:2.2em;display:block;margin-bottom:.4em}',
-      '.online-ultra-btn .ou-ic{width:1.4em;height:1.4em;margin-right:.45em}',
+      '.ou-spin{display:block;width:2.3em;height:2.3em;margin:0 auto 1em;border:.22em solid rgba(255,255,255,.15);border-top-color:#e8a838;border-radius:50%;animation:ou-rot .8s linear infinite}',
+      '.ou-err-ic{font-size:2em;display:block;margin-bottom:.4em}',
+      '.online-ultra-btn .ou-ic{width:1.5em;height:1.5em;margin-right:.5em}',
       '@keyframes ou-rot{to{transform:rotate(360deg)}}'
     ].join('');
     document.head.appendChild(s);
   }
 
-  /* ═══════════════ main component (my UI) ═══════════════ */
-
-  function nav() {
-    try { if (typeof Navigator !== 'undefined' && Navigator && Navigator.move) return Navigator; } catch (e) {}
-    if (window.Lampa && Lampa.Navigator && Lampa.Navigator.move) return Lampa.Navigator;
-    return null;
-  }
+  /* ═══════════════ component ═══════════════ */
 
   function OnlineUltraComponent(object) {
-    var card = object.movie || object;
-    var state = { data: null };
-    var scroll, content, started = false;
-    var comp = this;
+    var movie = object.movie || object;
+    var scroll, content, crumb, listbox, started = false;
+    var stack = []; // navigation levels: {title, rows}
 
     this.create = function () {
       injectCSS();
       scroll = new Lampa.Scroll({ mask: true, over: true, step: 250 });
-      try { scroll.render().addClass && scroll.render().addClass('ou-scroll'); } catch (e) {}
       content = el('div', 'ou');
-      content.appendChild(header());
-      var b = el('div');
-      b.id = 'ou-body';
-      content.appendChild(b);
+
+      var head = el('div', 'ou-head');
+      head.appendChild(el('span', 'ou-logo', 'OU'));
+      head.appendChild(el('span', 'ou-h-title', OU.title));
+      content.appendChild(head);
+
+      crumb = el('div', 'ou-crumb', esc(movie.title || movie.name || ''));
+      content.appendChild(crumb);
+
+      listbox = el('div');
+      content.appendChild(listbox);
       scroll.append(content);
-      showLoader('Проверяю источники…');
-      lookup();
+
+      loader('Ищу источники…');
+      externalids(movie, loadSources);
       return this.render();
     };
 
     this.render = function () { return scroll.render(); };
-
-    this.start = function () {
-      started = true;
-      setController();
-    };
-
+    this.start = function () { started = true; setController(); };
     this.pause = function () {};
     this.stop = function () {};
-    this.destroy = function () {
-      state.data = null;
-      try { scroll.destroy(); } catch (e) {}
-    };
+    this.destroy = function () { try { scroll.destroy(); } catch (e) {} stack = []; };
 
     function setController() {
       Lampa.Controller.add('content', {
@@ -303,185 +216,178 @@
         down: function () { var N = nav(); if (N) N.move('down'); },
         left: function () { var N = nav(); if (N && N.canmove('left')) N.move('left'); else Lampa.Controller.toggle('menu'); },
         right: function () { var N = nav(); if (N) N.move('right'); },
-        back: function () { Lampa.Activity.backward(); }
+        back: goBack
       });
       Lampa.Controller.toggle('content');
     }
 
-    function header() {
-      var h = el('div', 'ou-head');
-      var name = esc(card.title || card.name || '');
-      h.appendChild(el('span', 'ou-logo', 'OU'));
-      var box = el('div');
-      box.appendChild(el('div', 'ou-h-title', OU.title));
-      box.appendChild(el('div', 'ou-h-sub', name + (card.year ? ' · ' + card.year : '')));
-      h.appendChild(box);
-      return h;
-    }
-
-    function body() { return content.querySelector('#ou-body'); }
-
-    function setBody(node) {
-      var b = body();
-      b.innerHTML = '';
-      if (typeof node === 'string') b.innerHTML = node;
-      else b.appendChild(node);
-      refocus();
+    function goBack() {
+      if (stack.length > 1) { stack.pop(); render(stack[stack.length - 1]); }
+      else Lampa.Activity.backward();
     }
 
     function refocus() {
       if (!started) return;
       try {
-        // Don't steal focus while another screen (e.g. the player) is active.
         if (Lampa.Controller.enabled && Lampa.Controller.enabled().name !== 'content') return;
         Lampa.Controller.collectionSet(scroll.render());
         Lampa.Controller.collectionFocus(false, scroll.render());
       } catch (e) {}
     }
 
-    // One button helper — binds Lampa's hover:enter (remote + mouse) once, guarded against double-fire.
-    function mkBtn(cls, label, cb) {
-      var b = el('div', 'ou-btn ' + cls + ' selector');
-      b.tabIndex = 0;
-      b.innerHTML = esc(label);
-      var busy = false;
-      var run = function () {
-        if (busy) return;
-        busy = true;
-        setTimeout(function () { busy = false; }, 700);
-        cb();
-      };
-      if (window.$) { try { window.$(b).on('hover:enter', run); } catch (e) { b.addEventListener('click', run); } }
-      else b.addEventListener('click', run);
-      return b;
+    function loader(msg) {
+      listbox.innerHTML = '<div class="ou-state"><span class="ou-spin"></span>' + esc(msg) + '</div>';
     }
 
-    function showLoader(msg) {
-      setBody('<div class="ou-state"><span class="ou-spin"></span>' + esc(msg) + '</div>');
+    function errorState(msg) {
+      listbox.innerHTML = '<div class="ou-state"><span class="ou-err-ic">⚠️</span>' + esc(msg) + '</div>';
     }
 
-    function showEngineOnly(msg) {
-      var wrap = el('div');
-      wrap.appendChild(el('div', 'ou-state', '<span class="ou-err-ic">🔎</span>' + esc(msg)));
-      var act = el('div', 'ou-actions');
-      act.style.justifyContent = 'center';
-      act.appendChild(engineButton('🎬 Открыть все источники (движок)'));
-      wrap.appendChild(act);
-      setBody(wrap);
+    function setCrumb() {
+      var names = stack.map(function (l) { return l.title; });
+      crumb.innerHTML = esc(movie.title || movie.name || '') +
+        (names.length ? ' · <b>' + names.map(esc).join('</b> › <b>') + '</b>' : '');
     }
 
-    function engineButton(label) {
-      return mkBtn('ghost', label, function () { Engine.open(card); });
-    }
-
-    /* ---- lookup ---- */
-    function lookup() {
-      Collaps.lookup(card, function (data) {
-        state.data = data;
-        if (data.type === 'film' || data.type === 'movie') buildMovie(data);
-        else buildSeries(data);
-      }, function (reason) {
-        // Health-filter: Collaps has nothing → don't show a broken source, offer the engine.
-        showEngineOnly(reason === 'noid'
-          ? 'Не удалось определить ID фильма. Откройте полный движок источников.'
-          : 'В быстром источнике (Collaps) не найдено. Полный движок проверит остальные 20 балансеров.');
-      });
-    }
-
-    /* ---- movie UI ---- */
-    function buildMovie(data) {
-      var wrap = el('div');
-
-      var srcCard = el('div', 'ou-card');
-      var src = el('div', 'ou-src');
-      src.appendChild(el('span', 'ou-src-name', 'Collaps'));
-      src.appendChild(el('span', 'ou-ok', '✓ РАБОТАЕТ'));
-      if (data.quality) src.appendChild(el('span', 'ou-badge', esc(data.quality)));
-      srcCard.appendChild(src);
-
-      var voices = data.voiceActing || [];
-      if (voices.length) {
-        srcCard.appendChild(el('div', 'ou-lbl', 'Озвучки в этом файле (' + voices.length + ')'));
-        var chips = el('div', 'ou-chips');
-        voices.slice(0, 24).forEach(function (v) {
-          chips.appendChild(el('span', 'ou-chip', esc(v)));
+    /* ---- level 0: sources ---- */
+    function loadSources() {
+      loader('Ищу источники…');
+      events(movie, function (list) {
+        if (!list.length) return errorState('Ни один источник не нашёл этот фильм. Попробуйте сменить бэкенд в настройках.');
+        var rows = list.map(function (src) {
+          return {
+            play: false,
+            title: src.name || src.balanser,
+            sub: 'источник',
+            onSelect: function () { openUrl(sourceUrl(src.url, movie), src.name || src.balanser); }
+          };
         });
-        srcCard.appendChild(chips);
-        srcCard.appendChild(el('div', 'ou-note', 'Все дорожки уже внутри потока — <b>переключаются в плеере</b> кнопкой «Аудио».'));
-      }
-      wrap.appendChild(srcCard);
-
-      var act = el('div', 'ou-actions');
-      act.appendChild(mkBtn('primary', '▶ Смотреть', function () { playMovie(data); }));
-      act.appendChild(engineButton('🎬 Другие источники'));
-      wrap.appendChild(act);
-
-      setBody(wrap);
-    }
-
-    function playMovie(data) {
-      showLoader('Получаю поток…');
-      Collaps.movieStream(data, function (url) {
-        var title = card.title || card.name || data.name;
-        var play = { url: url, title: title, quality: false, id: card.id };
-        try {
-          var hash = L().Utils.hash(card.id + '_' + (card.original_title || card.title || data.name));
-          if (L().Timeline) play.timeline = L().Timeline.view(hash);
-        } catch (e) {}
-        try { L().Player.play(play); }
-        catch (e) { try { L().Player.play({ url: url, title: title }); } catch (e2) {} }
-        buildMovie(data); // restore UI behind the player
+        push({ title: null, rows: rows, header: 'Источники' });
       }, function () {
-        // Extraction failed (e.g. balancer changed) — never show a broken source, hand to engine.
-        var wrap = el('div');
-        wrap.appendChild(el('div', 'ou-state', '<span class="ou-err-ic">⚠️</span>Быстрый поток недоступен для этого фильма.'));
-        var act = el('div', 'ou-actions'); act.style.justifyContent = 'center';
-        act.appendChild(engineButton('🎬 Открыть все источники (движок)'));
-        wrap.appendChild(act);
-        setBody(wrap);
+        errorState('Бэкенд недоступен. Проверьте интернет или смените бэкенд в настройках.');
       });
     }
 
-    /* ---- series UI (browse from Collaps, play via engine) ---- */
-    function buildSeries(data) {
-      var wrap = el('div');
-      var seasons = (data.seasons || []).filter(function (s) { return s && s.season; });
-
-      var srcCard = el('div', 'ou-card');
-      var src = el('div', 'ou-src');
-      src.appendChild(el('span', 'ou-src-name', 'Сериал'));
-      src.appendChild(el('span', 'ou-badge', seasons.length + ' ' + plural(seasons.length, 'сезон', 'сезона', 'сезонов')));
-      if (data.quality) src.appendChild(el('span', 'ou-badge', esc(data.quality)));
-      srcCard.appendChild(src);
-
-      var voices = data.voiceActing || [];
-      if (voices.length) {
-        srcCard.appendChild(el('div', 'ou-lbl', 'Доступные озвучки (' + voices.length + ')'));
-        var vc = el('div', 'ou-chips');
-        voices.slice(0, 20).forEach(function (v) { vc.appendChild(el('span', 'ou-chip', esc(v))); });
-        srcCard.appendChild(vc);
-      }
-      wrap.appendChild(srcCard);
-
-      srcCard.appendChild(el('div', 'ou-note',
-        'Для сериалов выбор <b>сезона, серии и озвучки</b> — в полном движке: он корректно подбирает поток по каждой серии и сам обновляется.'));
-
-      var act = el('div', 'ou-actions');
-      act.appendChild(mkBtn('primary', '▶ Смотреть (сезоны и озвучки)', function () { Engine.open(card); }));
-      wrap.appendChild(act);
-
-      setBody(wrap);
+    /* ---- drill into a source / folder ---- */
+    function openUrl(url, title) {
+      loader('Загружаю «' + esc(title) + '»…');
+      pushPending(title);
+      openLampac(url, function (res) {
+        if (!res.data.length) return dropPending('В этом источнике пусто — вернитесь назад и выберите другой.');
+        var rows = res.data.map(function (d) { return rowFromData(d); });
+        replacePending(rows);
+      }, function () {
+        dropPending('Источник не ответил — вернитесь назад и выберите другой.');
+      });
     }
 
-    function plural(n, one, few, many) {
-      var m10 = n % 10, m100 = n % 100;
-      if (m10 === 1 && m100 !== 11) return one;
-      if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return few;
-      return many;
+    function rowFromData(d) {
+      var isPlay = playable(d);
+      var title = d.title || d.name || d.translate || d.voice_name || 'Смотреть';
+      var subParts = [];
+      if (d.translate && d.translate !== title) subParts.push(d.translate);
+      if (d.voice_name && d.voice_name !== title) subParts.push(d.voice_name);
+      var q = d.maxquality || d.quality;
+      if (q && typeof q === 'string') subParts.push(q);
+      return {
+        play: isPlay,
+        title: title,
+        sub: subParts.join(' · '),
+        badge: (isPlay && q && typeof q === 'string') ? q : null,
+        data: d,
+        onSelect: function () {
+          if (isPlay) doPlay(d);
+          else if (d.url) openUrl(withRjson(absolute(d.url)), d.name || d.title || title);
+        }
+      };
+    }
+
+    // Deeper urls from Lampac are absolute; keep as-is.
+    function absolute(url) { return url; }
+
+    /* ---- play ---- */
+    function doPlay(d) {
+      var url = streamOf(d);
+      if (!url) return;
+      var lvl = stack[stack.length - 1];
+      var siblings = (lvl ? lvl.rows : []).filter(function (r) { return r.play && r.data; });
+      var playlist = siblings.map(function (r) {
+        return { url: streamOf(r.data), title: r.title, quality: qualityObj(r.data) };
+      });
+      var element = {
+        url: url,
+        title: playTitle(d),
+        quality: qualityObj(d),
+        isonline: true
+      };
+      if (playlist.length > 1) element.playlist = playlist;
+      try {
+        var hash = L().Utils.hash(movie.id + '_' + (movie.original_title || movie.title || movie.name || ''));
+        if (L().Timeline) element.timeline = L().Timeline.view(hash);
+      } catch (e) {}
+      try {
+        L().Player.play(element);
+        if (playlist.length > 1) L().Player.playlist(playlist);
+      } catch (e) {
+        try { L().Player.play({ url: url, title: playTitle(d) }); } catch (e2) {}
+      }
+    }
+
+    function qualityObj(d) {
+      // Lampac may provide a {quality:url} map; pass through if object, else let player auto-pick.
+      if (d && d.quality && typeof d.quality === 'object') return d.quality;
+      return false;
+    }
+
+    function playTitle(d) {
+      var t = movie.title || movie.name || '';
+      var v = d.translate || d.voice_name;
+      if (v && String(t).indexOf(v) < 0) t += ' · ' + v;
+      return t;
+    }
+
+    /* ---- level stack + render ---- */
+    function push(level) { stack.push(level); render(level); }
+
+    // pending = show a level immediately (loader already up); filled by replacePending.
+    var pendingTitle = null;
+    function pushPending(title) { pendingTitle = title; }
+    function replacePending(rows) {
+      stack.push({ title: pendingTitle, rows: rows });
+      pendingTitle = null;
+      render(stack[stack.length - 1]);
+    }
+    function dropPending(msg) { pendingTitle = null; errorState(msg); }
+
+    function render(level) {
+      setCrumb();
+      listbox.innerHTML = '';
+      level.rows.forEach(function (r) { listbox.appendChild(makeRow(r)); });
+      refocus();
+    }
+
+    function makeRow(r) {
+      var row = el('div', 'ou-row selector' + (r.play ? ' play' : ''));
+      row.tabIndex = 0;
+      var ic = r.play
+        ? '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>'
+        : '<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor"><path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></svg>';
+      row.appendChild(el('div', 'ou-row-ic', ic));
+      var body = el('div', 'ou-row-body');
+      body.appendChild(el('div', 'ou-row-title', esc(r.title)));
+      if (r.sub) body.appendChild(el('div', 'ou-row-sub', esc(r.sub)));
+      row.appendChild(body);
+      if (r.badge) row.appendChild(el('div', 'ou-row-badge', esc(r.badge)));
+
+      var busy = false;
+      var run = function () { if (busy) return; busy = true; setTimeout(function () { busy = false; }, 700); r.onSelect(); };
+      if (window.$) { try { window.$(row).on('hover:enter', run); } catch (e) { row.addEventListener('click', run); } }
+      else row.addEventListener('click', run);
+      return row;
     }
   }
 
-  /* ═══════════════ card button ═══════════════ */
+  /* ═══════════════ card button (clean, native-styled) ═══════════════ */
 
   function addButton(e) {
     if (e.type !== 'complite' || !e.object) return;
@@ -491,32 +397,19 @@
     if (render.find('.online-ultra-btn').length) return;
 
     var svg = '<svg class="ou-ic" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>';
-    var btn = $('<div class="full-start__button selector online-ultra-btn" ' +
-      'style="background:linear-gradient(135deg,#e8a838,#f5c842);color:#111;font-weight:800;display:inline-flex;align-items:center;border-radius:20px;">' +
-      svg + 'Online Ultra</div>');
+    var btn = $('<div class="full-start__button selector view--online online-ultra-btn">' + svg + 'Online Ultra</div>');
 
-    btn.on('hover:enter', function () {
-      openUltra(e.data.movie);
-    });
+    btn.on('hover:enter', function () { openUltra(e.data.movie); });
 
     var box = render.find('.full-start-new__buttons').first();
     if (!box.length) box = render.find('.full-start__buttons').first();
     if (box.length) box.append(btn);
-    else {
-      var torrent = render.find('.view--torrent');
-      if (torrent.length) torrent.after(btn);
-    }
+    else { var t = render.find('.view--torrent'); if (t.length) t.after(btn); }
   }
 
   function openUltra(card) {
     try {
-      L().Activity.push({
-        url: '',
-        title: OU.title,
-        component: 'online_ultra',
-        movie: card,
-        page: 1
-      });
+      L().Activity.push({ url: '', title: OU.title, component: 'online_ultra', movie: card, page: 1 });
     } catch (e) { notify('Не удалось открыть Online Ultra'); }
   }
 
@@ -525,7 +418,6 @@
   function addSettings() {
     var La = L();
     if (!La.SettingsApi) return;
-
     try {
       La.SettingsApi.addComponent({
         component: 'online_ultra',
@@ -533,28 +425,11 @@
         icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>'
       });
     } catch (e) {}
-
-    param('ou_proxy', 'select', '0',
-      { '0': 'Прямой + авто-фолбэк (рекоменд.)', '1': 'Прокси 1 (Cloudflare)', '2': 'Прокси 2 (Deno)', '3': 'Прокси 3' },
-      'Прокси для источников', 'За границей без VPN: если прямой не открывает — переключите на прокси.');
-
-    param('ou_engine', 'select', '1',
-      { '1': 'Загружать автоматически', '0': 'Не загружать' },
-      'Движок 21 балансера', 'Подтягивает online_mod (сериалы и все источники). Оставьте включённым.');
-
-    param('ou_engine_url', 'input', OU.engine_url_default, null,
-      'URL движка', 'Можно заменить на своё зеркало online_mod.');
-
-    param('ou_collaps_token', 'input', OU.collaps_token_default, null,
-      'Токен Collaps', 'Если быстрый источник перестал искать — обновите токен.');
-  }
-
-  function param(name, type, def, values, fieldName, fieldDesc) {
     try {
-      L().SettingsApi.addParam({
+      La.SettingsApi.addParam({
         component: 'online_ultra',
-        param: { name: name, type: type, values: values || undefined, default: def },
-        field: { name: fieldName, description: fieldDesc || '' }
+        param: { name: 'ou_backend', type: 'input', default: OU.backend_default },
+        field: { name: 'Бэкенд источников (Lampac)', description: 'Сервер-агрегатор балансеров. По умолчанию akter-black. Можно указать свой Lampac.' }
       });
     } catch (e) {}
   }
@@ -565,20 +440,14 @@
     var La = L();
     try { La.Component.add('online_ultra', OnlineUltraComponent); } catch (e) {}
     addSettings();
-    Engine.tune();
-    Engine.load(function () {}); // warm the engine so series / "all sources" open instantly
-
     La.Listener.follow('full', addButton);
-
     notify('✅ ' + OU.title + ' ' + OU.version + ' готов');
   }
 
   function waitLampa() {
-    if (window.Lampa && Lampa.Listener && Lampa.Component && Lampa.Activity && Lampa.Storage) {
+    if (window.Lampa && Lampa.Listener && Lampa.Component && Lampa.Activity && Lampa.Storage && Lampa.Scroll) {
       try { boot(); } catch (e) { console.error('[OnlineUltra] boot error', e); }
-    } else {
-      setTimeout(waitLampa, 200);
-    }
+    } else setTimeout(waitLampa, 200);
   }
 
   waitLampa();

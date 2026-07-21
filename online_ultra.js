@@ -19,17 +19,22 @@
   })();
   var OU_HOST = OU_BASE.slice(0, -1);
 
-  // Online Ultra: пометка проверенных источников и сортировка меню «Источник».
+  // Online Ultra: пометки в меню «Источник» и сортировка «проверенные сверху».
   // Сервер дописывает качество (напр. «Filmix ~ 2160p») только к источникам,
-  // прошедшим живую проверку — по этому признаку и отличаем.
-  function ouSortItems(sources, filter_sources, balanser) {
+  // прошедшим живую проверку — по этому признаку и отличаем. Пока проверка идёт
+  // (ou_checking), неподтверждённые помечаются «проверяется», а не «не проверен».
+  var ou_checking = false;
+  function ouSortItems(sources, filter_sources, balanser, checking) {
     var items = filter_sources.map(function (e) {
       var nm = String(sources[e].name || e);
       var ok = /\d{3,4}p|4K/i.test(nm);
+      var badge = ok
+        ? ' <span style="color:#5ad17a;font-size:.8em;white-space:nowrap">\u25cf \u043f\u0440\u043e\u0432\u0435\u0440\u0435\u043d</span>'
+        : checking
+          ? ' <span style="color:#f5c842;font-size:.8em;white-space:nowrap">\u25cf \u043f\u0440\u043e\u0432\u0435\u0440\u044f\u0435\u0442\u0441\u044f\u2026</span>'
+          : ' <span style="color:#ff6b6b;font-size:.8em;white-space:nowrap">\u25cf \u043d\u0435 \u043f\u0440\u043e\u0432\u0435\u0440\u0435\u043d</span>';
       return {
-        title: nm + (ok
-          ? ' <span style="color:#5ad17a;font-size:.8em;white-space:nowrap">\u25cf \u043f\u0440\u043e\u0432\u0435\u0440\u0435\u043d</span>'
-          : ' <span style="color:#ff6b6b;font-size:.8em;white-space:nowrap">\u25cf \u043d\u0435 \u043f\u0440\u043e\u0432\u0435\u0440\u0435\u043d</span>'),
+        title: nm + badge,
         source: e,
         selected: e == balanser,
         ghost: !sources[e].show,
@@ -586,6 +591,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
     };
     this.lifeSource = function() {
       var _this3 = this;
+      ou_checking = true;
       return new Promise(function(resolve, reject) {
         var url = _this3.requestParams(Defined.localhost + 'lifeevents?memkey=' + (_this3.memkey || ''));
         var red = false;
@@ -621,7 +627,8 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
               };
             });
             filter_sources = Lampa.Arrays.getKeys(sources);
-            filter.set('sort', ouSortItems(sources, filter_sources, balanser));
+            ou_checking = !(life_wait_times > 15 || json.ready);
+            filter.set('sort', ouSortItems(sources, filter_sources, balanser, ou_checking));
             filter.chosen('sort', [sources[balanser] ? sources[balanser].name : balanser]);
             gou(json);
             var lastb = _this3.getLastChoiceBalanser();
@@ -1162,7 +1169,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       if (filter_items.voice && filter_items.voice.length) add('voice', Lampa.Lang.translate('torrent_parser_voice'));
       if (filter_items.season && filter_items.season.length) add('season', Lampa.Lang.translate('torrent_serial_season'));
       filter.set('filter', select);
-      filter.set('sort', ouSortItems(sources, filter_sources, balanser));
+      filter.set('sort', ouSortItems(sources, filter_sources, balanser, ou_checking));
       this.selected(filter_items);
     };
     /**

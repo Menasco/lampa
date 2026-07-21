@@ -457,6 +457,13 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       filter.render().find('.filter--search').appendTo(filter.render().find('.torrent-filter'));
       filter.onSelect = function(type, a, b) {
         if (type == 'filter') {
+          if (a.ou_clear) {
+            try { Lampa.Storage.set('ou_stats', {}); } catch (e) {}
+            try { filter.set('sort', ouSortItems(sources, filter_sources, balanser, ou_checking)); } catch (e) {}
+            Lampa.Noty.show('\u0421\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043a\u0430 \u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a\u043e\u0432 \u0441\u0431\u0440\u043e\u0448\u0435\u043d\u0430');
+            setTimeout(Lampa.Select.close, 10);
+            return;
+          }
           if (a.reset) {
 			  clarificationSearchDelete();
 
@@ -1216,6 +1223,10 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       select.push({
         title: Lampa.Lang.translate('torrent_parser_reset'),
         reset: true
+      });
+      select.push({
+        title: '\u0421\u0431\u0440\u043e\u0441\u0438\u0442\u044c \u0441\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043a\u0443 \u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a\u043e\u0432',
+        ou_clear: true
       });
       this.saveChoice(choice);
       if (filter_items.voice && filter_items.voice.length) add('voice', Lampa.Lang.translate('torrent_parser_voice'));

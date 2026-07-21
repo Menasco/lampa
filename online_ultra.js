@@ -19,6 +19,26 @@
   })();
   var OU_HOST = OU_BASE.slice(0, -1);
 
+  // Online Ultra: пометка проверенных источников и сортировка меню «Источник».
+  // Сервер дописывает качество (напр. «Filmix ~ 2160p») только к источникам,
+  // прошедшим живую проверку — по этому признаку и отличаем.
+  function ouSortItems(sources, filter_sources, balanser) {
+    var items = filter_sources.map(function (e) {
+      var nm = String(sources[e].name || e);
+      var ok = /\d{3,4}p|4K/i.test(nm);
+      return {
+        title: nm + (ok
+          ? ' <span style="color:#5ad17a;font-size:.8em;white-space:nowrap">\u25cf \u043f\u0440\u043e\u0432\u0435\u0440\u0435\u043d</span>'
+          : ' <span style="color:#ff6b6b;font-size:.8em;white-space:nowrap">\u25cf \u043d\u0435 \u043f\u0440\u043e\u0432\u0435\u0440\u0435\u043d</span>'),
+        source: e,
+        selected: e == balanser,
+        ghost: !sources[e].show,
+        ou_ok: ok
+      };
+    });
+    return items.filter(function (i) { return i.ou_ok; }).concat(items.filter(function (i) { return !i.ou_ok; }));
+  }
+
   var Defined = {
     api: 'lampac',
     localhost: OU_BASE,
@@ -601,14 +621,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
               };
             });
             filter_sources = Lampa.Arrays.getKeys(sources);
-            filter.set('sort', filter_sources.map(function(e) {
-              return {
-                title: sources[e].name,
-                source: e,
-                selected: e == balanser,
-                ghost: !sources[e].show
-              };
-            }));
+            filter.set('sort', ouSortItems(sources, filter_sources, balanser));
             filter.chosen('sort', [sources[balanser] ? sources[balanser].name : balanser]);
             gou(json);
             var lastb = _this3.getLastChoiceBalanser();
@@ -1149,14 +1162,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       if (filter_items.voice && filter_items.voice.length) add('voice', Lampa.Lang.translate('torrent_parser_voice'));
       if (filter_items.season && filter_items.season.length) add('season', Lampa.Lang.translate('torrent_serial_season'));
       filter.set('filter', select);
-      filter.set('sort', filter_sources.map(function(e) {
-        return {
-          title: sources[e].name,
-          source: e,
-          selected: e == balanser,
-          ghost: !sources[e].show
-        };
-      }));
+      filter.set('sort', ouSortItems(sources, filter_sources, balanser));
       this.selected(filter_items);
     };
     /**

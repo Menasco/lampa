@@ -1,14 +1,14 @@
 /**
- * ONLINE ULTRA v6.0 — плагин онлайн-просмотра для Lampa.
+ * Kas plugin — плагин онлайн-просмотра для Lampa.
  * Основан на официальном фронтенде Lampac (интерфейс как у BwaRC/online_mod:
  * сверху фильтр «Источник», справа выбор озвучки, сезоны/серии списком).
- * Бэкенд настраивается: Настройки → Online Ultra (по умолчанию akter-black).
- * Установка: https://menasco.github.io/lampa/online_ultra.js
+ * Бэкенд настраивается: Настройки → Kas plugin (по умолчанию akter-black).
+ * Установка: https://menasco.github.io/lampa/kas_plugin.js
  */
 (function() {
   'use strict';
 
-  // --- Online Ultra: настраиваемый бэкенд ---
+  // --- Kas plugin: настраиваемый бэкенд ---
   var OU_DEFAULT = 'https://akter-black.com/';
   var OU_BASE = (function () {
     var b = OU_DEFAULT;
@@ -19,7 +19,7 @@
   })();
   var OU_HOST = OU_BASE.slice(0, -1);
 
-  // ===== Online Ultra: реальные замеры на устройстве =====
+  // ===== Kas plugin: реальные замеры на устройстве =====
   // Меряем время «клик по варианту -> ссылка получена и отдана плееру» (это и есть
   // основная задержка: сервер достаёт поток с балансера). Копим по каждому источнику.
   var ou_checking = false;
@@ -1881,7 +1881,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
         Lampa.Activity.push({
           url: params.element.url,
           title: 'Lampac - ' + params.element.title,
-          component: 'online_ultra',
+          component: 'kas_plugin',
           movie: params.element,
           page: 1,
           search: params.element.title,
@@ -1899,10 +1899,9 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
     window.lampac_plugin = true;
     var manifst = {
       type: 'video',
-      version: '6.0',
-      name: 'Online Ultra',
+      name: 'Kas plugin',
       description: 'Плагин для просмотра онлайн сериалов и фильмов',
-      component: 'online_ultra',
+      component: 'kas_plugin',
       onContextMenu: function onContextMenu(object) {
         return {
           name: Lampa.Lang.translate('lampac_watch'),
@@ -1911,7 +1910,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       },
       onContextLauch: function onContextLauch(object) {
         resetTemplates();
-        Lampa.Component.add('online_ultra', component);
+        Lampa.Component.add('kas_plugin', component);
 
 		var id = Lampa.Utils.hash(object.number_of_seasons ? object.original_name : object.original_title);
 		var all = Lampa.Storage.get('clarification_search','{}');
@@ -1919,7 +1918,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
         Lampa.Activity.push({
           url: '',
           title: Lampa.Lang.translate('title_online'),
-          component: 'online_ultra',
+          component: 'kas_plugin',
           search: all[id] ? all[id] : object.title,
           search_one: object.title,
           search_two: object.original_title,
@@ -2041,8 +2040,8 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       Lampa.Template.add('lampac_prestige_folder', "<div class=\"online-prestige online-prestige--folder selector\">\n            <div class=\"online-prestige__folder\">\n                <svg viewBox=\"0 0 128 112\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n                    <rect y=\"20\" width=\"128\" height=\"92\" rx=\"13\" fill=\"white\"></rect>\n                    <path d=\"M29.9963 8H98.0037C96.0446 3.3021 91.4079 0 86 0H42C36.5921 0 31.9555 3.3021 29.9963 8Z\" fill=\"white\" fill-opacity=\"0.23\"></path>\n                    <rect x=\"11\" y=\"8\" width=\"106\" height=\"76\" rx=\"13\" fill=\"white\" fill-opacity=\"0.51\"></rect>\n                </svg>\n            </div>\n            <div class=\"online-prestige__body\">\n                <div class=\"online-prestige__head\">\n                    <div class=\"online-prestige__title\">{title}</div>\n                    <div class=\"online-prestige__time\">{time}</div>\n                </div>\n\n                <div class=\"online-prestige__footer\">\n                    <div class=\"online-prestige__info\">{info}</div>\n                </div>\n            </div>\n        </div>");
       Lampa.Template.add('lampac_prestige_watched', "<div class=\"online-prestige online-prestige-watched selector\">\n            <div class=\"online-prestige-watched__icon\">\n                <svg width=\"21\" height=\"21\" viewBox=\"0 0 21 21\" fill=\"none\" xmlns=\"http://www.w3.org/2000/svg\">\n                    <circle cx=\"10.5\" cy=\"10.5\" r=\"9\" stroke=\"currentColor\" stroke-width=\"3\"/>\n                    <path d=\"M14.8477 10.5628L8.20312 14.399L8.20313 6.72656L14.8477 10.5628Z\" fill=\"currentColor\"/>\n                </svg>\n            </div>\n            <div class=\"online-prestige-watched__body\">\n                \n            </div>\n        </div>");
     }
-    var button = "<div class=\"full-start__button selector view--online oultra--button\" data-subtitle=\"".concat(manifst.name, " v").concat(manifst.version, "\">\n        <svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" viewBox=\"0 0 392.697 392.697\" xml:space=\"preserve\">\n            <path d=\"M21.837,83.419l36.496,16.678L227.72,19.886c1.229-0.592,2.002-1.846,1.98-3.209c-0.021-1.365-0.834-2.592-2.082-3.145\n                L197.766,0.3c-0.903-0.4-1.933-0.4-2.837,0L21.873,77.036c-1.259,0.559-2.073,1.803-2.081,3.18\n                C19.784,81.593,20.584,82.847,21.837,83.419z\" fill=\"currentColor\"></path>\n            <path d=\"M185.689,177.261l-64.988-30.01v91.617c0,0.856-0.44,1.655-1.167,2.114c-0.406,0.257-0.869,0.386-1.333,0.386\n                c-0.368,0-0.736-0.082-1.079-0.244l-68.874-32.625c-0.869-0.416-1.421-1.293-1.421-2.256v-92.229L6.804,95.5\n                c-1.083-0.496-2.344-0.406-3.347,0.238c-1.002,0.645-1.608,1.754-1.608,2.944v208.744c0,1.371,0.799,2.615,2.045,3.185\n                l178.886,81.768c0.464,0.211,0.96,0.315,1.455,0.315c0.661,0,1.318-0.188,1.892-0.555c1.002-0.645,1.608-1.754,1.608-2.945\n                V180.445C187.735,179.076,186.936,177.831,185.689,177.261z\" fill=\"currentColor\"></path>\n            <path d=\"M389.24,95.74c-1.002-0.644-2.264-0.732-3.347-0.238l-178.876,81.76c-1.246,0.57-2.045,1.814-2.045,3.185v208.751\n                c0,1.191,0.606,2.302,1.608,2.945c0.572,0.367,1.23,0.555,1.892,0.555c0.495,0,0.991-0.104,1.455-0.315l178.876-81.768\n                c1.246-0.568,2.045-1.813,2.045-3.185V98.685C390.849,97.494,390.242,96.384,389.24,95.74z\" fill=\"currentColor\"></path>\n            <path d=\"M372.915,80.216c-0.009-1.377-0.823-2.621-2.082-3.18l-60.182-26.681c-0.938-0.418-2.013-0.399-2.938,0.045\n                l-173.755,82.992l60.933,29.117c0.462,0.211,0.958,0.316,1.455,0.316s0.993-0.105,1.455-0.316l173.066-79.092\n                C372.122,82.847,372.923,81.593,372.915,80.216z\" fill=\"currentColor\"></path>\n        </svg>\n\n        <span>Online Ultra</span>\n    </div>"); // нужна заглушка, а то при страте лампы говорит пусто
-    Lampa.Component.add('online_ultra', component); //то же самое
+    var button = "<div class=\"full-start__button selector view--online oultra--button\" data-subtitle=\"".concat(manifst.name, " v").concat(manifst.version, "\">\n        <svg xmlns=\"http://www.w3.org/2000/svg\" version=\"1.1\" xmlns:xlink=\"http://www.w3.org/1999/xlink\" viewBox=\"0 0 392.697 392.697\" xml:space=\"preserve\">\n            <path d=\"M21.837,83.419l36.496,16.678L227.72,19.886c1.229-0.592,2.002-1.846,1.98-3.209c-0.021-1.365-0.834-2.592-2.082-3.145\n                L197.766,0.3c-0.903-0.4-1.933-0.4-2.837,0L21.873,77.036c-1.259,0.559-2.073,1.803-2.081,3.18\n                C19.784,81.593,20.584,82.847,21.837,83.419z\" fill=\"currentColor\"></path>\n            <path d=\"M185.689,177.261l-64.988-30.01v91.617c0,0.856-0.44,1.655-1.167,2.114c-0.406,0.257-0.869,0.386-1.333,0.386\n                c-0.368,0-0.736-0.082-1.079-0.244l-68.874-32.625c-0.869-0.416-1.421-1.293-1.421-2.256v-92.229L6.804,95.5\n                c-1.083-0.496-2.344-0.406-3.347,0.238c-1.002,0.645-1.608,1.754-1.608,2.944v208.744c0,1.371,0.799,2.615,2.045,3.185\n                l178.886,81.768c0.464,0.211,0.96,0.315,1.455,0.315c0.661,0,1.318-0.188,1.892-0.555c1.002-0.645,1.608-1.754,1.608-2.945\n                V180.445C187.735,179.076,186.936,177.831,185.689,177.261z\" fill=\"currentColor\"></path>\n            <path d=\"M389.24,95.74c-1.002-0.644-2.264-0.732-3.347-0.238l-178.876,81.76c-1.246,0.57-2.045,1.814-2.045,3.185v208.751\n                c0,1.191,0.606,2.302,1.608,2.945c0.572,0.367,1.23,0.555,1.892,0.555c0.495,0,0.991-0.104,1.455-0.315l178.876-81.768\n                c1.246-0.568,2.045-1.813,2.045-3.185V98.685C390.849,97.494,390.242,96.384,389.24,95.74z\" fill=\"currentColor\"></path>\n            <path d=\"M372.915,80.216c-0.009-1.377-0.823-2.621-2.082-3.18l-60.182-26.681c-0.938-0.418-2.013-0.399-2.938,0.045\n                l-173.755,82.992l60.933,29.117c0.462,0.211,0.958,0.316,1.455,0.316s0.993-0.105,1.455-0.316l173.066-79.092\n                C372.122,82.847,372.923,81.593,372.915,80.216z\" fill=\"currentColor\"></path>\n        </svg>\n\n        <span>Kas plugin</span>\n    </div>"); // нужна заглушка, а то при страте лампы говорит пусто
+    Lampa.Component.add('kas_plugin', component); //то же самое
     resetTemplates();
 
 
@@ -2053,7 +2052,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
 	  // //console.log(btn.clone().removeClass('focus').prop('outerHTML'))
       btn.on('hover:enter', function() {
         resetTemplates();
-        Lampa.Component.add('online_ultra', component);
+        Lampa.Component.add('kas_plugin', component);
 
 		var id = Lampa.Utils.hash(e.movie.number_of_seasons ? e.movie.original_name : e.movie.original_title);
 		var all = Lampa.Storage.get('clarification_search','{}');
@@ -2061,7 +2060,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
         Lampa.Activity.push({
           url: '',
           title: Lampa.Lang.translate('title_online'),
-          component: 'online_ultra',
+          component: 'kas_plugin',
           search: all[id] ? all[id] : e.movie.title,
           search_one: e.movie.title,
           search_two: e.movie.original_title,
@@ -2155,16 +2154,16 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
   if (!window.lampac_plugin) startPlugin();
 
 
-  // --- Online Ultra: настройки ---
+  // --- Kas plugin: настройки ---
   try {
     if (window.Lampa && Lampa.SettingsApi) {
       Lampa.SettingsApi.addComponent({
-        component: 'online_ultra',
-        name: 'Online Ultra',
+        component: 'kas_plugin',
+        name: 'Kas plugin',
         icon: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>'
       });
       Lampa.SettingsApi.addParam({
-        component: 'online_ultra',
+        component: 'kas_plugin',
         param: { name: 'ou_backend', type: 'input', 'default': OU_DEFAULT },
         field: { name: 'Бэкенд источников (Lampac)', description: 'После смены адреса перезапустите Lampa.' },
         onChange: function () { try { Lampa.Noty.show('Перезапустите Lampa, чтобы применить бэкенд'); } catch (e) {} }

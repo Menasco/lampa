@@ -1899,6 +1899,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
     window.lampac_plugin = true;
     var manifst = {
       type: 'video',
+	  version: '1.0',
       name: 'Kas plugin',
       description: 'Плагин для просмотра онлайн сериалов и фильмов',
       component: 'kas_plugin',

@@ -9,7 +9,7 @@
   'use strict';
 
   if (window.kas_plugin_loaded) return;
-  var OU_VERSION = '2.1.0';
+  var OU_VERSION = '2.1.1';
   var OU_DEFAULT = 'https://beta.mitsu.tv/api/';
   var OU_FILMIX = 'http://wtch.ch/';
   function ouBackend(value) {
@@ -999,7 +999,18 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       });
       var initial = stream.url;
       var candidates = [initial];
-      Object.keys(stream.quality || {}).sort(function (a, b) { return parseInt(b) - parseInt(a); }).forEach(function (key) {
+      var initialHeight = 0;
+      var qualityKeys = Object.keys(stream.quality || {});
+      qualityKeys.forEach(function (key) {
+        if (stream.quality[key] === initial) initialHeight = parseInt(key) || 0;
+      });
+      qualityKeys.sort(function (a, b) {
+        var ah = parseInt(a) || 0, bh = parseInt(b) || 0;
+        // A failed 1080p stream must reach 720p/480p before trying 4K.
+        var ar = ah > 0 && ah <= 1080 && (!initialHeight || ah < initialHeight) ? 0 : 1;
+        var br = bh > 0 && bh <= 1080 && (!initialHeight || bh < initialHeight) ? 0 : 1;
+        return ar - br || (ar === 0 ? bh - ah : ah - bh);
+      }).forEach(function (key) {
         var url = stream.quality[key];
         if (candidates.indexOf(url) === -1) candidates.push(url);
       });
@@ -2157,7 +2168,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       });
       Lampa.SettingsApi.addParam({
         component: 'kas_plugin',
-        param: { name: 'ou_backend', type: 'input', 'default': OU_DEFAULT },
+        param: { name: 'ou_backend', type: 'input', values: '', 'default': OU_DEFAULT },
         field: { name: 'Бэкенд источников (Lampac)', description: 'Lumio (HTTPS): Phantom, Zetflix, VideoHUB и другие. Filmix отдельно через WTCH. После смены адреса перезапустите Lampa.' },
         onChange: function () { try { Lampa.Noty.show('Перезапустите Lampa, чтобы применить бэкенд'); } catch (e) {} }
       });

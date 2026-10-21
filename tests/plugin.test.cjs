@@ -228,11 +228,18 @@ test('full plugin registers alongside Lampac and duplicate loading is harmless',
   h.Lampa.Component = {add: () => registered++};
   h.Lampa.Listener = {follow() {}};
   h.Lampa.Storage.sync = () => {};
-  h.Lampa.SettingsApi = {addComponent() {}, addParam: () => settings++};
+  const registeredSettings = [];
+  h.Lampa.SettingsApi = {addComponent() {}, addParam: data => { settings++; registeredSettings.push(data.param); }};
   vm.runInNewContext(source, h.context);
   assert.equal(registered, 1);
   assert.equal(settings, 1);
-  assert.equal(h.Lampa.Manifest.plugins.version, '2.1.0');
+  assert.equal(h.Lampa.Manifest.plugins.version, '2.1.1');
+  // Lampa Params.update treats a non-string values field as a lookup table.
+  // Opening Settings crashed here when input registration omitted values.
+  const input = registeredSettings.find(param => param.name === 'ou_backend');
+  const stored = h.Lampa.Storage.get(input.name, input.default);
+  const displayed = typeof input.values === 'string' ? stored : input.values[stored] || input.values[input.default];
+  assert.equal(displayed, 'https://beta.mitsu.tv/api/');
   vm.runInNewContext(source, h.context);
   assert.equal(registered, 1);
   assert.equal(settings, 1);
@@ -465,7 +472,7 @@ test('Phantom checks the media playlist and falls back within the selected voice
   await h.component.createSource();
   const rows = [{method: 'call', url: '/lite/phantom/video', voice_name: 'Дубляж'}];
   captureDisplay(h, rows)(rows[0]);
-  h.calls[0].ok({url: '/proxy/1080.m3u8', quality: {'1080p': '/proxy/1080.m3u8', '720p': '/proxy/720.m3u8'}});
+  h.calls[0].ok({url: '/proxy/2160.m3u8', quality: {'2160p': '/proxy/2160.m3u8', '1440p': '/proxy/1440.m3u8', '1080p': '/proxy/1080.m3u8', '720p': '/proxy/720.m3u8', '480p': '/proxy/480.m3u8'}});
   h.calls[1].ok('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\n/api/proxy/1080-child.m3u8');
   assert.equal(h.calls[2].url, 'https://beta.mitsu.tv/api/proxy/1080-child.m3u8');
   h.calls[2].fail({status: 401});

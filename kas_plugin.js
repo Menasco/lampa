@@ -2,15 +2,16 @@
  * Kas plugin — плагин онлайн-просмотра для Lampa.
  * Основан на официальном фронтенде Lampac (интерфейс как у BwaRC/online_mod:
  * сверху фильтр «Источник», справа выбор озвучки, сезоны/серии списком).
- * Бэкенд настраивается: Настройки → Kas plugin (по умолчанию WTCH).
+ * Бэкенд настраивается: Настройки → Kas plugin (Lumio; Filmix через WTCH).
  * Установка: https://menasco.github.io/lampa/kas_plugin.js
  */
 (function() {
   'use strict';
 
   if (window.kas_plugin_loaded) return;
-  var OU_VERSION = '2.0.0';
-  var OU_DEFAULT = 'http://wtch.ch/';
+  var OU_VERSION = '2.1.0';
+  var OU_DEFAULT = 'https://beta.mitsu.tv/api/';
+  var OU_FILMIX = 'http://wtch.ch/';
   function ouBackend(value) {
     value = String(value || '').trim();
     if (!/^https?:\/\/[^\s/?#]+(?:\/[^?#]*)?$/i.test(value)) return OU_DEFAULT;
@@ -25,10 +26,36 @@
       saved = OU_DEFAULT;
     }
     Lampa.Storage.set('ou_backend_migration_v2', true);
+    // WTCH has disabled Zetflix. Preserve explicit custom servers and allow
+    // restoring the former default after this one-time migration.
+    if (!Lampa.Storage.get('ou_backend_migration_v21', false) && /^https?:\/\/wtch\.ch\/?$/i.test(String(saved).trim())) {
+      Lampa.Storage.set('ou_backend_previous', saved);
+      Lampa.Storage.set('ou_backend', OU_DEFAULT);
+      saved = OU_DEFAULT;
+    }
+    Lampa.Storage.set('ou_backend_migration_v21', true);
     return ouBackend(saved);
   })();
   var OU_HOST = OU_BASE.slice(0, -1);
   var OU_ANI = 'https://aniliberty.top/api/v1/';
+  var OU_PARSER = 'https://jacred.su';
+
+  function ouTorrentSearch(movie) {
+    var local = movie.title || movie.name || movie.original_title || movie.original_name || '';
+    var original = movie.original_title || movie.original_name || local;
+    var year = String(movie.release_date || movie.first_air_date || '').slice(0, 4);
+    var variants = {df: original, lg: local, df_lg: original + ' ' + local, lg_df: local + ' ' + original};
+    Object.keys(variants).forEach(function (key) { variants[key + '_year'] = (variants[key] + ' ' + year).trim(); });
+    var card = {};
+    Object.keys(movie).forEach(function (key) { card[key] = movie[key]; });
+    // The native parser reads title/original_title and maps genres for series too.
+    card.title = local;
+    card.original_title = original;
+    card.genres = Array.isArray(movie.genres) ? movie.genres : [];
+    return {url: '', component: 'torrents', title: 'Торренты', page: 1, movie: card,
+      search: variants[Lampa.Storage.field('parse_lang')] || original,
+      search_one: local, search_two: original};
+  }
 
   function ouEscape(value) {
     return String(value == null ? '' : value).replace(/[&<>"']/g, function (c) {
@@ -42,21 +69,64 @@
     ];
   }
   function ouPreferredSources(rows) {
-    var order = ['filmix', 'filmixtv', 'fxapi', 'zetflix', 'zetflixdb', 'rutubemovie', 'rutube', 'vkmovie', 'vkvideo'];
+    var order = ['filmix', 'filmixtv', 'fxapi', 'phantom', 'zetflix', 'cdnvideohub', 'veoveo', 'kinotochka', 'hdvb', 'vibix', 'rutubemovie', 'rutube', 'vkmovie', 'vkvideo'];
     return (Array.isArray(rows) ? rows : []).filter(function (row) {
-      return row && order.indexOf(String(row.balanser || '').toLowerCase()) !== -1 && /^https?:\/\//i.test(row.url || '');
+      return row && row.show !== false && order.indexOf(String(row.balanser || '').toLowerCase()) !== -1 && /^https?:\/\//i.test(row.url || '');
     }).sort(function (a, b) {
       return order.indexOf(a.balanser.toLowerCase()) - order.indexOf(b.balanser.toLowerCase());
     }).concat(ouLocalSources());
   }
   function ouDefaultSources() {
     return ouPreferredSources([
-      {balanser: 'fxapi', name: 'Filmix', url: OU_BASE + 'lite/fxapi'},
+      {balanser: 'fxapi', name: 'Filmix · WTCH', url: OU_FILMIX + 'lite/fxapi'},
+      {balanser: 'phantom', name: 'Phantom', url: OU_BASE + 'lite/phantom'},
       {balanser: 'zetflix', name: 'Zetflix', url: OU_BASE + 'lite/zetflix'},
-      {balanser: 'zetflixdb', name: 'ZetflixDB', url: OU_BASE + 'lite/zetflixdb'},
-      {balanser: 'rutubemovie', name: 'Rutube', url: OU_BASE + 'lite/rutubemovie'},
+      {balanser: 'cdnvideohub', name: 'VideoHUB', url: OU_BASE + 'lite/cdnvideohub'},
+      {balanser: 'kinotochka', name: 'Kinotochka', url: OU_BASE + 'lite/kinotochka'},
+      {balanser: 'rutubemovie', name: 'Rutube · WTCH', url: OU_FILMIX + 'lite/rutubemovie'},
       {balanser: 'vkmovie', name: 'VK Видео', url: OU_BASE + 'lite/vkmovie'}
     ]);
+  }
+  function ouSourceBase(url) {
+    if (String(url).indexOf(OU_FILMIX) === 0) return OU_FILMIX;
+    return OU_BASE;
+  }
+  function ouUrl(value, base) {
+    if (value && typeof value === 'object') value = value.url || value.link || value.file || value.src;
+    if (typeof value !== 'string') return '';
+    value = value.trim();
+    if (!value) return '';
+    base = base || OU_BASE;
+    value = value.replace(/^https?:\/\/(?:127\.0\.0\.1|localhost):9118(?=\/|$)/i, base.replace(/\/$/, ''));
+    if (value.indexOf('//') === 0) value = base.split(':')[0] + ':' + value;
+    if (value.charAt(0) === '/') {
+      var origin = /^(https?:\/\/[^/]+)/i.exec(base)[1];
+      value = value.indexOf('/api/') === 0 ? origin + value : base + value.slice(1);
+    } else if (!/^[a-z][a-z0-9+.-]*:/i.test(value)) value = base + value;
+    return /^https?:\/\/[^\s]+$/i.test(value) ? value : '';
+  }
+  function ouStream(data, base) {
+    var result = {};
+    if (!data || typeof data !== 'object') return result;
+    Object.keys(data).forEach(function (key) { result[key] = data[key]; });
+    ['url', 'stream', 'url_reserve', 'subtitle', 'subtitles_call'].forEach(function (key) {
+      if (data[key]) result[key] = String(data[key]).split(' or ').map(function (url) { return ouUrl(url, base); }).filter(Boolean).join(' or ');
+    });
+    if (data.quality && typeof data.quality === 'object') {
+      result.quality = {};
+      Object.keys(data.quality).forEach(function (key) {
+        var value = data.quality[key];
+        var url = typeof value === 'string' ? value.split(' or ').map(function (part) { return ouUrl(part, base); }).filter(Boolean).join(' or ') : ouUrl(value, base);
+        if (url) result.quality[key] = url;
+      });
+    } else delete result.quality;
+    if (Array.isArray(data.subtitles)) result.subtitles = data.subtitles.filter(function (sub) { return sub && typeof sub === 'object'; }).map(function (sub) {
+      var copy = {};
+      Object.keys(sub).forEach(function (key) { copy[key] = sub[key]; });
+      copy.url = ouUrl(sub.url, base);
+      return copy;
+    }).filter(function (sub) { return !!sub.url; });
+    return result;
   }
   function ouAnimeVideos(release) {
     return (Array.isArray(release.episodes) ? release.episodes : []).slice().sort(function (a, b) {
@@ -382,8 +452,8 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
 
   function account(url) {
     url = url + '';
-    if (url.indexOf(OU_BASE) !== 0) return url;
-    if (url.indexOf('account_email=') == -1) {
+    if (url.indexOf(OU_BASE) !== 0 && url.indexOf(OU_FILMIX) !== 0) return url;
+    if (url.indexOf(OU_DEFAULT) !== 0 && url.indexOf('account_email=') == -1) {
       var email = Lampa.Storage.get('account_email');
       if (email) url = Lampa.Utils.addUrlComponent(url, 'account_email=' + encodeURIComponent(email));
     }
@@ -402,7 +472,8 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
     return url;
   }
 
-  function addHeaders() {
+  function addHeaders(url) {
+    if (url && url.indexOf(OU_BASE) !== 0) return {};
     var kit_aesgcmkey = Lampa.Storage.get('kit_aesgcmkey', '');
     if (kit_aesgcmkey) return { 'X-Kit-AesGcm': Lampa.Storage.get('kit_aesgcmkey', '') };
     return {};
@@ -445,11 +516,11 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       voice: []
     };
 
-    balansers_with_search = ['fxapi', 'filmix', 'zetflix', 'rutube', 'vk', 'kas_aniliberty'];
+    balansers_with_search = ['fxapi', 'filmix', 'phantom', 'zetflix', 'cdnvideohub', 'veoveo', 'kinotochka', 'rutube', 'vk', 'kas_aniliberty'];
 
     function balanserName(j) {
       var bals = j.balanser;
-      var name = j.name.split(' ')[0];
+      var name = String(j.name || j.balanser || '').split(' ')[0];
       return (bals || name).toLowerCase();
     }
 
@@ -587,16 +658,23 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
     };
     this.externalids = function() {
       return new Promise(function(resolve, reject) {
+        object.movie.imdb_id = object.movie.imdb_id || object.movie.imdbid;
+        object.movie.kinopoisk_id = object.movie.kinopoisk_id || object.movie.kinopoiskid || object.movie.kp_id;
         if (!object.movie.imdb_id || !object.movie.kinopoisk_id) {
           var query = [];
           query.push('id=' + encodeURIComponent(object.movie.id));
           query.push('serial=' + (object.movie.name ? 1 : 0));
           if (object.movie.imdb_id) query.push('imdb_id=' + (object.movie.imdb_id || ''));
           if (object.movie.kinopoisk_id) query.push('kinopoisk_id=' + (object.movie.kinopoisk_id || ''));
-          var url = Defined.localhost + 'externalids?' + query.join('&');
+          var url = ouSourceBase(source) + 'externalids?' + query.join('&');
           network.timeout(10000);
           network.silent(account(url), function(json) {
+            if (typeof json === 'string') {
+              try { json = JSON.parse(json); } catch (e) { json = null; }
+            }
             if (json && typeof json === 'object' && !json.accsdb) {
+              json.imdb_id = json.imdb_id || json.imdbid;
+              json.kinopoisk_id = json.kinopoisk_id || json.kinopoiskid || json.kp_id;
               ['imdb_id', 'kinopoisk_id', 'tmdb_id'].forEach(function (key) {
                 if (json[key]) object.movie[key] = json[key];
               });
@@ -605,7 +683,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
           }, function() {
             resolve();
           }, false, {
-              headers: addHeaders()
+              headers: addHeaders(url)
 		  });
         } else resolve();
       });
@@ -616,7 +694,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       Lampa.Storage.set('kas_last_balanser', last_select_balanser);
     };
     this.changeBalanser = function(balanser_name) {
-      if (balanser_name === 'kas_torrents') return this.request('kas:torrents');
+      if (balanser_name === 'kas_torrents') return this.openTorrents();
       this.updateBalanser(balanser_name);
       Lampa.Storage.set('kas_balanser', balanser_name);
       var to = this.getChoice(balanser_name);
@@ -644,7 +722,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       }
 
       query.push('title=' + encodeURIComponent(object.clarification ? object.search : object.movie.title || object.movie.name));
-      query.push('original_title=' + encodeURIComponent(object.movie.original_title || object.movie.original_name));
+      query.push('original_title=' + encodeURIComponent(object.movie.original_title || object.movie.original_name || ''));
       query.push('serial=' + (object.movie.name ? 1 : 0));
       query.push('original_language=' + (object.movie.original_language || ''));
       query.push('year=' + ((object.movie.release_date || object.movie.first_air_date || '0000') + '').slice(0, 4));
@@ -652,7 +730,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       query.push('clarification=' + (object.clarification ? 1 : 0));
       query.push('similar=' + (object.similar ? true : false));
       query.push('rchtype=' + (((window.rch_nws && window.rch_nws[hostkey]) ? window.rch_nws[hostkey].type : (window.rch && window.rch[hostkey]) ? window.rch[hostkey].type : '') || ''));
-      if (Lampa.Storage.get('account_email', '')) query.push('cub_id=' + Lampa.Utils.hash(Lampa.Storage.get('account_email', '')));
+      if (url.indexOf(OU_DEFAULT) !== 0 && Lampa.Storage.get('account_email', '')) query.push('cub_id=' + Lampa.Utils.hash(Lampa.Storage.get('account_email', '')));
       return url + (url.indexOf('?') >= 0 ? '&' : '?') + query.join('&');
     };
     this.getLastChoiceBalanser = function() {
@@ -669,7 +747,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
           var name = balanserName(j);
           sources[name] = {
             url: j.url,
-            name: j.name,
+            name: j.name || name,
             show: typeof j.show == 'undefined' ? true : j.show
           };
         });
@@ -681,6 +759,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
           } else {
             balanser = Lampa.Storage.get('kas_balanser', filter_sources[0]);
           }
+          if (balanser === 'zetflixdb' && sources.zetflix) balanser = 'zetflix';
           if (!sources[balanser]) balanser = filter_sources[0];
           if (!sources[balanser].show && !object.lampac_custom_select) balanser = filter_sources[0];
           source = sources[balanser].url;
@@ -693,8 +772,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
     };
     this.createSource = function() {
       var self = this;
-      // The public default has stable routes. Don't query all providers or wait
-      // for the backend before allowing independent anime/torrent sources.
+      // Keep Filmix and AniLiberty available even if discovery is slow.
       if (OU_BASE === OU_DEFAULT) return this.startSource(ouDefaultSources());
       return new Promise(function (resolve) {
         network.timeout(10000);
@@ -763,24 +841,63 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
         if (!destroyed) self.request(self.requestParams(source));
       });
     };
-    this.request = function(url) {
-      lastRequestedUrl = url;
-      if (url.indexOf('kas:anime') === 0) return this.requestAnime(url);
-      if (url === 'kas:torrents') {
-        this.loading(false);
-        Lampa.Activity.push({component: 'torrents', title: 'Торренты',
-          search: object.movie.title || object.movie.name,
-          search_one: object.movie.title || object.movie.name,
-          search_two: object.movie.original_title || object.movie.original_name,
-          movie: object.movie, page: 1});
+    this.openTorrents = function(searchOnly) {
+      var self = this;
+      // Store builds hide these settings until torrent support is enabled.
+      if (window.lampa_settings) window.lampa_settings.torrents_use = true;
+      var type = Lampa.Storage.field('parser_torrent_type') || 'jackett';
+      var use = Lampa.Storage.field('parser_use_link') || 'one';
+      var server = Lampa.Storage.field(Lampa.Storage.field('torrserver_use_link') === 'two' ? 'torrserver_url_two' : 'torrserver_url');
+      var first = Lampa.Storage.field(type + '_url');
+      var second = Lampa.Storage.field(type + '_url_two');
+      // Only fill an empty Jackett configuration. Never overwrite user servers,
+      // API keys, the selected secondary link, or a Prowlarr configuration.
+      if (type === 'jackett' && !first && !second && !Lampa.Storage.field('jackett_key') && !Lampa.Storage.field('jackett_key_two')) {
+        Lampa.Storage.set('jackett_url', OU_PARSER);
+        Lampa.Storage.set('parser_torrent_type', 'jackett');
+        Lampa.Storage.set('parser_use_link', 'one');
+        first = OU_PARSER;
+        use = 'one';
+        Lampa.Noty.show('Поиск торрентов настроен: JacRed.su. Адрес можно изменить в настройках парсера.');
+      }
+      var parserReady = type === 'torrserver' ? !!server : !!(use === 'two' ? second : use === 'both' ? first || second : first);
+      this.loading(false);
+      if (!parserReady || (!server && !searchOnly)) {
+        var items = [];
+        if (!parserReady) items.push({title: 'Настроить парсер торрентов', settings: 'parser'});
+        if (!server) items.push({title: 'Указать адрес TorrServer для воспроизведения', settings: 'server'});
+        if (parserReady) items.push({title: 'Открыть только поиск', search: true});
+        Lampa.Select.show({title: 'Торренты: ' + (!parserReady ? 'не настроен поиск' : 'не указан TorrServer'), items: items,
+          onBack: function () { Lampa.Controller.toggle('content'); },
+          onSelect: function (item) {
+            Lampa.Select.close();
+            if (item.search) self.openTorrents(true);
+            else Lampa.Settings.create(item.settings);
+          }});
         return;
       }
-      network.timeout(25000);
+      Lampa.Storage.set('parser_use', true);
+      Lampa.Activity.push(ouTorrentSearch(object.movie));
+    };
+    this.request = function(url) {
+      if (url === 'kas:torrents') return this.openTorrents();
+      lastRequestedUrl = url;
+      if (url.indexOf('kas:anime') === 0) return this.requestAnime(url);
+      var self = this;
+      var epoch = ++requestEpoch;
+      url = ouUrl(url, ouSourceBase(source));
+      if (!url) return this.doesNotAnswer({msg: 'Источник вернул некорректную ссылку.'});
+      lastRequestedUrl = url;
+      network.timeout(35000);
       number_of_requests++;
       if (number_of_requests < 10) {
-        network["native"](account(url), this.parse.bind(this), this.doesNotAnswer.bind(this), false, {
+        network["native"](account(url), function (data) {
+          if (!destroyed && epoch === requestEpoch) self.parse(data);
+        }, function (error) {
+          if (!destroyed && epoch === requestEpoch) self.doesNotAnswer(error);
+        }, false, {
           dataType: 'text',
-		  headers: addHeaders()
+		  headers: addHeaders(url)
         });
         clearTimeout(number_of_requests_timer);
         number_of_requests_timer = setTimeout(function() {
@@ -794,7 +911,10 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
         var elems = [];
         html.find(name).each(function() {
           var item = $(this);
-          var data = JSON.parse(item.attr('data-json'));
+          var data;
+          try { data = JSON.parse(item.attr('data-json')); } catch (e) { return; }
+          if (!data || typeof data !== 'object') return;
+          data = ouStream(data, ouSourceBase(source));
           var season = item.attr('s');
           var episode = item.attr('e');
           var text = item.text();
@@ -822,62 +942,129 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       }
     };
     this.getFileUrl = function(file, call, waiting_rch) {
-	  var _this = this;
-
-      if(Lampa.Storage.field('player') !== 'inner' && file.stream && Lampa.Platform.is('apple')){
-		  var newfile = Lampa.Arrays.clone(file);
-		  newfile.method = 'play';
-		  newfile.url = file.stream;
-		  call(newfile, {});
-	  }
-      else if (file.method == 'play') call(file, {});
-      else {
-        Lampa.Loading.start(function() {
-          Lampa.Loading.stop();
-          Lampa.Controller.toggle('content');
-          network.clear();
-        });
-        network["native"](account(file.url), function(json) {
-			if(json.rch){
-				if(waiting_rch) {
-					waiting_rch = false;
-					Lampa.Loading.stop();
-					call(false, {});
-				}
-				else {
-					_this.rch(json,function(){
-						Lampa.Loading.stop();
-
-						_this.getFileUrl(file, call, true);
-					});
-				}
-			}
-			else{
-				Lampa.Loading.stop();
-				call(json, json);
-			}
-        }, function() {
-          Lampa.Loading.stop();
-          call(false, {});
-        }, false, {
-            headers: addHeaders()
-		  });
+      var self = this;
+      var epoch = requestEpoch;
+      if (!file || destroyed) return;
+      file = ouStream(file, ouSourceBase(source));
+      if (file.qualitys) file.quality = ouStream({quality: file.qualitys}, ouSourceBase(source)).quality;
+      if (Lampa.Platform.is('apple') && Lampa.Storage.field('player') !== 'inner' && file.stream) {
+        file.url = file.stream;
+        file.method = 'play';
       }
+      if (file.method === 'play') return this.prepareStream(file, call, epoch);
+      if (!file.url) return call(false, {});
+      Lampa.Loading.start(function () {
+        requestEpoch++;
+        Lampa.Loading.stop();
+        Lampa.Controller.toggle('content');
+        network.clear();
+        ouResolveDone(false);
+      });
+      network.timeout(35000);
+      network.native(account(file.url), function (json) {
+        if (destroyed || epoch !== requestEpoch) return;
+        if (typeof json === 'string') {
+          try { json = JSON.parse(json); } catch (e) { json = null; }
+        }
+        if (json && json.rch && !waiting_rch) {
+          return self.rch(json, function () {
+            if (!destroyed && epoch === requestEpoch) self.getFileUrl(file, call, true);
+          });
+        }
+        Lampa.Loading.stop();
+        if (!json || json.accsdb || json.rch || !json.url) return call(false, json || {});
+        json = ouStream(json, ouSourceBase(source));
+        if (!json.url) return call(false, {});
+        self.prepareStream(json, call, epoch);
+      }, function () {
+        if (destroyed || epoch !== requestEpoch) return;
+        Lampa.Loading.stop();
+        call(false, {});
+      }, false, {dataType: 'text', headers: addHeaders(file.url)});
+    };
+    this.prepareStream = function(stream, call, epoch) {
+      if (!stream || !stream.url) return call(false, {});
+      this.orUrlReserve(stream);
+      this.setDefaultQuality(stream);
+      // Public Lampac proxies sometimes return HTTP 200 with an empty body.
+      // Check only same-backend HLS (known CORS support), not arbitrary CDNs.
+      if (stream.url.indexOf(OU_BASE + 'proxy/') !== 0 || !/\.m3u8(?:[?#]|$)/i.test(stream.url)) return call(stream, stream);
+      network.timeout(12000);
+      Lampa.Loading.start(function () {
+        requestEpoch++;
+        network.clear();
+        Lampa.Loading.stop();
+        ouResolveDone(false);
+        Lampa.Controller.toggle('content');
+      });
+      var initial = stream.url;
+      var candidates = [initial];
+      Object.keys(stream.quality || {}).sort(function (a, b) { return parseInt(b) - parseInt(a); }).forEach(function (key) {
+        var url = stream.quality[key];
+        if (candidates.indexOf(url) === -1) candidates.push(url);
+      });
+      // Retry another quality of the same voice, with a bounded wait.
+      candidates = candidates.slice(0, 3);
+      function finish(ok) {
+        if (destroyed || epoch !== requestEpoch) return;
+        Lampa.Loading.stop();
+        if (ok && stream.url !== initial) Lampa.Noty.show('Выбранное качество недоступно. Включён другой вариант той же озвучки.');
+        call(ok ? stream : false, ok ? stream : {msg: 'Источник не отдал видеоплейлист. Выберите другую озвучку или источник.'});
+      }
+      function probe(url, depth, done) {
+        network.native(url, function (body) {
+          if (destroyed || epoch !== requestEpoch) return;
+          if (typeof body !== 'string' || !/^\s*#EXTM3U/.test(body)) return done(false);
+          var lines = body.split(/\r?\n/);
+          var media = lines.filter(function (line) { return line.trim() && line.trim().charAt(0) !== '#'; });
+          if (!media.length) return done(false);
+          if (/#EXTINF:/.test(body)) return done(true);
+          if (!/#EXT-X-STREAM-INF:/.test(body) || depth >= 1) return done(false);
+          var child = media[0].trim();
+          if (!/^https?:\/\//i.test(child) && child.charAt(0) !== '/') child = url.split('?')[0].replace(/[^/]*$/, '') + child;
+          else if (child.charAt(0) === '/') child = ouUrl(child);
+          // A cross-origin child may require the player's native transport.
+          if (child.indexOf(OU_BASE + 'proxy/') !== 0) return done(true);
+          probe(child, depth + 1, done);
+        }, function () {
+          if (!destroyed && epoch === requestEpoch) done(false);
+        }, false, {dataType: 'text', headers: stream.headers || {}});
+      }
+      function next() {
+        if (destroyed || epoch !== requestEpoch) return;
+        var url = candidates.shift();
+        if (!url) return finish(false);
+        stream.url = url;
+        if (url.indexOf(OU_BASE + 'proxy/') !== 0 || !/\.m3u8(?:[?#]|$)/i.test(url)) return finish(true);
+        probe(url, 0, function (ok) {
+          if (ok) return finish(true);
+          Object.keys(stream.quality || {}).forEach(function (key) {
+            if (stream.quality[key] === url) delete stream.quality[key];
+          });
+          next();
+        });
+      }
+      next();
     };
     this.toPlayElement = function(file) {
-      var play = {
-        title: file.title,
-        url: file.url,
-        quality: file.qualitys,
-        timeline: file.timeline,
-        subtitles: file.subtitles,
-		segments: file.segments,
-        callback: file.mark,
-		season: file.season,
-		episode: file.episode,
-		voice_name: file.voice_name,
-		thumbnail: file.thumbnail
-      };
+      var play = ouStream(file, ouSourceBase(source));
+      play.quality = file.qualitys ? ouStream({quality: file.qualitys}, ouSourceBase(source)).quality : play.quality;
+      play.callback = file.mark;
+      return play;
+    };
+    this.applyStream = function(play, stream) {
+      // A resolved episode can require its own headers, subtitles and timeout.
+      ['url', 'quality', 'headers', 'subtitles', 'subtitle', 'subtitles_call',
+        'segments', 'hls_manifest_timeout', 'url_reserve', 'thumbnail'].forEach(function (key) {
+        if (typeof stream[key] !== 'undefined') play[key] = stream[key];
+      });
+      if (stream.vast && stream.vast.url) {
+        ['url', 'msg', 'region', 'platform', 'screen'].forEach(function (key) {
+          play['vast_' + key] = stream.vast[key];
+        });
+      }
+      this.orUrlReserve(play);
+      this.setDefaultQuality(play);
       return play;
     };
     this.orUrlReserve = function(data) {
@@ -890,6 +1077,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
     this.setDefaultQuality = function(data) {
       if (data.quality && Lampa.Arrays.getKeys(data.quality).length) {
         for (var q in data.quality) {
+          if (typeof data.quality[q] !== 'string') continue;
           if (parseInt(q) == Lampa.Storage.field('video_quality_default')) {
             data.url = data.quality[q];
             this.orUrlReserve(data);
@@ -908,55 +1096,30 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
             if (json && json.url) {
               var playlist = [];
               var first = _this5.toPlayElement(item);
-              first.url = json.url;
-              first.headers = json_call.headers || json.headers;
-              first.quality = json_call.quality || item.qualitys;
-			  first.segments = json_call.segments || item.segments;
-              first.hls_manifest_timeout = json_call.hls_manifest_timeout || json.hls_manifest_timeout;
-              first.subtitles = json.subtitles;
-			  first.subtitles_call = json_call.subtitles_call || json.subtitles_call;
-			  if (json.vast && json.vast.url) {
-                first.vast_url = json.vast.url;
-                first.vast_msg = json.vast.msg;
-                first.vast_region = json.vast.region;
-                first.vast_platform = json.vast.platform;
-                first.vast_screen = json.vast.screen;
-			  }
-              _this5.orUrlReserve(first);
-              _this5.setDefaultQuality(first);
+              _this5.applyStream(first, json);
               if (item.season) {
                 videos.forEach(function(elem) {
                   var cell = _this5.toPlayElement(elem);
-                  if (elem == item) cell.url = json.url;
-                  else {
-                    if (elem.method == 'call') {
-                      if (Lampa.Storage.field('player') !== 'inner') {
-                        cell.url = elem.stream;
-						delete cell.quality;
-                      } else {
-                        cell.url = function(call) {
-                          _this5.getFileUrl(elem, function(stream, stream_json) {
-                            if (stream.url) {
-                              cell.url = stream.url;
-                              cell.quality = stream_json.quality || elem.qualitys;
-							  cell.segments = stream_json.segments || elem.segments;
-                              cell.subtitles = stream.subtitles;
-                              _this5.orUrlReserve(cell);
-                              _this5.setDefaultQuality(cell);
-                              elem.mark();
-                            } else {
-                              cell.url = '';
-                              Lampa.Noty.show(Lampa.Lang.translate('lampac_nolink'));
-                            }
-                            call();
-                          }, function() {
-                            cell.url = '';
-                            call();
-                          });
-                        };
-                      }
+                  if (elem == item) _this5.applyStream(cell, json);
+                  else if (elem.method === 'call') {
+                    if (Lampa.Storage.field('player') !== 'inner' && elem.stream) {
+                      cell.url = elem.stream;
+                      delete cell.quality;
                     } else {
-                      cell.url = elem.url;
+                      cell.url = function (call) {
+                        _this5.getFileUrl(elem, function (stream) {
+                          if (stream && stream.url) {
+                            _this5.applyStream(cell, stream);
+                            if (elem.mark) elem.mark();
+                          } else {
+                            cell.url = '';
+                            Lampa.Noty.show(Lampa.Lang.translate('lampac_nolink'));
+                          }
+                          call();
+                        });
+                      };
+                      // Do not replace the resolver with a listing's quality URL.
+                      delete cell.quality;
                     }
                   }
                   _this5.orUrlReserve(cell);
@@ -980,16 +1143,16 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
                 ouResolveDone(false);
                 Lampa.Noty.show(Lampa.Lang.translate('lampac_nolink'));
               }
-            } else { ouResolveDone(false); Lampa.Noty.show(Lampa.Lang.translate('lampac_nolink')); }
-          }, true);
+            } else { ouResolveDone(false); Lampa.Noty.show(json_call && json_call.msg || Lampa.Lang.translate('lampac_nolink')); }
+          });
         },
         onContextMenu: function onContextMenu(item, html, data, call) {
           _this5.getFileUrl(item, function(stream) {
             call({
-              file: stream.url,
-              quality: item.qualitys
+              file: stream && stream.url || '',
+              quality: stream && stream.quality || item.qualitys
             });
-          }, true);
+          });
         }
       });
       this.filter({
@@ -1697,6 +1860,9 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       var html = Lampa.Template.get('lampac_does_not_answer', {});
       var name = sources[balanser] ? sources[balanser].name : OU_HOST;
       var message = er && er.msg ? String(er.msg).replace(/<[^>]*>/g, '') : 'Источник ' + name + ' не ответил или не нашёл видео.';
+      if (er && er.status === 403 && /disable/i.test(er.responseText || '')) message = 'Источник ' + name + ' отключён владельцем сервера. Выберите другой источник.';
+      else if (er && (er.status === 401 || er.status === 403)) message = 'Источник ' + name + ' ограничил доступ. Проверьте авторизацию или выберите другой источник.';
+      else if (er && er.status >= 500) message = 'Сервер ' + name + ' временно недоступен (HTTP ' + er.status + '). Выберите другой источник или повторите позже.';
       html.find('.online-empty__title').text(message);
       html.find('.online-empty__time').text(er && er.accsdb
         ? 'Этот сервер требует авторизацию. Выберите другой источник или бэкенд в настройках Kas plugin.'
@@ -1971,7 +2137,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       }
     } catch (e) {}
     if (Lampa.Manifest.app_digital >= 177) {
-      var balansers_sync = ['filmix', 'fxapi', 'zetflix', 'zetflixdb', 'rutubemovie', 'vkmovie', 'kas_aniliberty'];
+      var balansers_sync = ['filmix', 'fxapi', 'phantom', 'zetflix', 'cdnvideohub', 'veoveo', 'kinotochka', 'rutubemovie', 'vkmovie', 'kas_aniliberty'];
       balansers_sync.forEach(function(name) {
         Lampa.Storage.sync('online_choice_' + name, 'object_object');
       });
@@ -1992,7 +2158,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       Lampa.SettingsApi.addParam({
         component: 'kas_plugin',
         param: { name: 'ou_backend', type: 'input', 'default': OU_DEFAULT },
-        field: { name: 'Бэкенд источников (Lampac)', description: 'По умолчанию WTCH (HTTP). После смены адреса перезапустите Lampa.' },
+        field: { name: 'Бэкенд источников (Lampac)', description: 'Lumio (HTTPS): Phantom, Zetflix, VideoHUB и другие. Filmix отдельно через WTCH. После смены адреса перезапустите Lampa.' },
         onChange: function () { try { Lampa.Noty.show('Перезапустите Lampa, чтобы применить бэкенд'); } catch (e) {} }
       });
     }

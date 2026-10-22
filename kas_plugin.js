@@ -9,7 +9,7 @@
   'use strict';
 
   if (window.kas_plugin_loaded) return;
-  var OU_VERSION = '2.1.1';
+  var OU_VERSION = '2.1.2';
   var OU_DEFAULT = 'https://beta.mitsu.tv/api/';
   var OU_FILMIX = 'http://wtch.ch/';
   function ouBackend(value) {
@@ -78,12 +78,12 @@
   }
   function ouDefaultSources() {
     return ouPreferredSources([
-      {balanser: 'fxapi', name: 'Filmix · WTCH', url: OU_FILMIX + 'lite/fxapi'},
+      {balanser: 'fxapi', name: 'Filmix', url: OU_FILMIX + 'lite/fxapi'},
       {balanser: 'phantom', name: 'Phantom', url: OU_BASE + 'lite/phantom'},
       {balanser: 'zetflix', name: 'Zetflix', url: OU_BASE + 'lite/zetflix'},
       {balanser: 'cdnvideohub', name: 'VideoHUB', url: OU_BASE + 'lite/cdnvideohub'},
       {balanser: 'kinotochka', name: 'Kinotochka', url: OU_BASE + 'lite/kinotochka'},
-      {balanser: 'rutubemovie', name: 'Rutube · WTCH', url: OU_FILMIX + 'lite/rutubemovie'},
+      {balanser: 'rutubemovie', name: 'Rutube', url: OU_FILMIX + 'lite/rutubemovie'},
       {balanser: 'vkmovie', name: 'VK Видео', url: OU_BASE + 'lite/vkmovie'}
     ]);
   }
@@ -204,6 +204,97 @@
         else if (tries >= 120) clearInterval(iv);
       }, 1000);
     } catch (e) {}
+  }
+  function ouTizenHlsSupported() {
+    return Lampa.Platform.is('tizen') && Lampa.PlayerVideo && Lampa.PlayerVideo.registerTube &&
+      window.Hls && window.Hls.isSupported && window.Hls.isSupported();
+  }
+  // Phantom serves fMP4 HLS. Use Lampa's video-adapter API to keep this
+  // transport local to the selected stream, without changing the TV player setting.
+  function ouInstallTizenHls() {
+    if (!Lampa.PlayerVideo || !Lampa.PlayerVideo.registerTube) return;
+    Lampa.PlayerVideo.registerTube({
+      name: 'kas_phantom_hls',
+      verify: function (url) {
+        var data = Lampa.Player.playdata && Lampa.Player.playdata();
+        if (!data || !data.kas_phantom_hls || !ouTizenHlsSupported()) return false;
+        if (data.url === url) return true;
+        return Object.keys(data.quality || {}).some(function (key) { return data.quality[key] === url; });
+      },
+      create: function (ready) {
+        var box = $('<video class="player-video__video" playsinline crossorigin="anonymous"></video>');
+        var video = box[0], hls = null, stopped = false, failed = false, timer = null;
+        var nativeLoad = video.load.bind(video);
+        var nativePlay = video.play.bind(video);
+        var src = Object.getOwnPropertyDescriptor(window.HTMLMediaElement.prototype, 'src');
+        var data = Lampa.Player.playdata() || {};
+        function fail(detail) {
+          if (stopped || failed) return;
+          failed = true;
+          clearTimeout(timer);
+          if (hls) { hls.destroy(); hls = null; }
+          // Only an error code, never a signed URL or a server response body.
+          var code = String(detail || 'playbackError').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 60);
+          var message = 'Phantom (Tizen): видео не запустилось [' + code + ']. Попробуйте другую озвучку или качество.';
+          Lampa.Noty.show(message);
+          Lampa.PlayerVideo.listener.send('error', {error: message, fatal: true});
+        }
+        function play() {
+          var promise = nativePlay();
+          if (promise && promise.catch) promise.catch(function () {});
+        }
+        video.addEventListener('playing', function () { clearTimeout(timer); });
+        video.addEventListener('error', function () { fail('mediaError'); });
+        Object.defineProperty(video, 'src', {
+          configurable: true,
+          get: function () { return src.get.call(video); },
+          set: function (url) {
+            // hls.js itself assigns a MediaSource blob URL to this same element.
+            if (!url || /^blob:/i.test(url)) return src.set.call(video, url);
+            if (stopped) return;
+            failed = false;
+            if (hls) hls.destroy();
+            clearTimeout(timer);
+            timer = setTimeout(function () { fail('startTimeout'); }, 45000);
+            try {
+              hls = new window.Hls({
+                enableWorker: false,
+                maxBufferLength: 20,
+                maxMaxBufferLength: 40,
+                manifestLoadTimeout: data.hls_manifest_timeout || 15000,
+                xhrSetup: function (xhr) {
+                  Object.keys(data.headers || {}).forEach(function (key) { xhr.setRequestHeader(key, data.headers[key]); });
+                }
+              });
+              var current = hls;
+              current.on(window.Hls.Events.MEDIA_ATTACHED, function () {
+                if (!stopped && hls === current) current.loadSource(url);
+              });
+              current.on(window.Hls.Events.MANIFEST_PARSED, function () {
+                if (!stopped && hls === current) play();
+              });
+              current.on(window.Hls.Events.ERROR, function (_, error) {
+                if (!stopped && hls === current && error.fatal) fail(error.details || error.type);
+              });
+              current.attachMedia(video);
+            } catch (error) { fail('initError'); }
+          }
+        });
+        // Lampa calls load() after assigning src; reloading would detach MSE.
+        video.load = function () { if (!hls) nativeLoad(); };
+        video.destroy = function () {
+          if (stopped) return;
+          stopped = true;
+          clearTimeout(timer);
+          if (hls) { hls.destroy(); hls = null; }
+          video.removeAttribute('src');
+          nativeLoad();
+          box.remove();
+        };
+        ready(video);
+        return box;
+      }
+    });
   }
   function ouBadge(color, text) { return ' <span style="color:' + color + ';font-size:.8em;white-space:nowrap">' + text + '</span>'; }
   // Метки: сначала реальный опыт на устройстве, потом слабый серверный сигнал.
@@ -985,6 +1076,16 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
     this.prepareStream = function(stream, call, epoch) {
       if (!stream || !stream.url) return call(false, {});
       this.orUrlReserve(stream);
+      var tizenPhantom = balanser === 'phantom' && ouTizenHlsSupported();
+      if (tizenPhantom && stream.quality) {
+        var hd = {};
+        Object.keys(stream.quality).forEach(function (key) {
+          if (parseInt(key) > 0 && parseInt(key) <= 1080) hd[key] = stream.quality[key];
+        });
+        var keys = Object.keys(hd).sort(function (a, b) { return parseInt(b) - parseInt(a); });
+        // MSE on older Samsung models is limited to Full HD.
+        if (keys.length) { stream.quality = hd; stream.url = hd[keys[0]]; }
+      }
       this.setDefaultQuality(stream);
       // Public Lampac proxies sometimes return HTTP 200 with an empty body.
       // Check only same-backend HLS (known CORS support), not arbitrary CDNs.
@@ -1029,7 +1130,10 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
           var lines = body.split(/\r?\n/);
           var media = lines.filter(function (line) { return line.trim() && line.trim().charAt(0) !== '#'; });
           if (!media.length) return done(false);
-          if (/#EXTINF:/.test(body)) return done(true);
+          if (/#EXTINF:/.test(body)) {
+            stream.kas_phantom_hls = !!(tizenPhantom && /#EXT-X-MAP:/.test(body));
+            return done(true);
+          }
           if (!/#EXT-X-STREAM-INF:/.test(body) || depth >= 1) return done(false);
           var child = media[0].trim();
           if (!/^https?:\/\//i.test(child) && child.charAt(0) !== '/') child = url.split('?')[0].replace(/[^/]*$/, '') + child;
@@ -1061,12 +1165,13 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       var play = ouStream(file, ouSourceBase(source));
       play.quality = file.qualitys ? ouStream({quality: file.qualitys}, ouSourceBase(source)).quality : play.quality;
       play.callback = file.mark;
+      play.card = object.movie;
       return play;
     };
     this.applyStream = function(play, stream) {
       // A resolved episode can require its own headers, subtitles and timeout.
       ['url', 'quality', 'headers', 'subtitles', 'subtitle', 'subtitles_call',
-        'segments', 'hls_manifest_timeout', 'url_reserve', 'thumbnail'].forEach(function (key) {
+        'segments', 'hls_manifest_timeout', 'url_reserve', 'thumbnail', 'kas_phantom_hls'].forEach(function (key) {
         if (typeof stream[key] !== 'undefined') play[key] = stream[key];
       });
       if (stream.vast && stream.vast.url) {
@@ -1113,7 +1218,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
                   var cell = _this5.toPlayElement(elem);
                   if (elem == item) _this5.applyStream(cell, json);
                   else if (elem.method === 'call') {
-                    if (Lampa.Storage.field('player') !== 'inner' && elem.stream) {
+                    if (!Lampa.Platform.is('tizen') && Lampa.Storage.field('player') !== 'inner' && elem.stream) {
                       cell.url = elem.stream;
                       delete cell.quality;
                     } else {
@@ -1145,8 +1250,14 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
                 var element = first;
 				element.isonline = true;
                 ouWatchPlayback(element);
-                Lampa.Player.play(element);
-                Lampa.Player.playlist(playlist);
+                try {
+                  Lampa.Player.play(element);
+                  Lampa.Player.playlist(playlist);
+                } catch (error) {
+                  Lampa.Loading.stop();
+                  Lampa.Noty.show('Не удалось открыть плеер: ' + ouEscape(error && error.message || 'ошибка запуска'));
+                  return;
+                }
 				if(element.subtitles_call) _this5.loadSubtitles(element.subtitles_call)
                 item.mark();
                 _this5.updateBalanser(balanser);
@@ -1957,6 +2068,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
   }
 
   function startPlugin() {
+    ouInstallTizenHls();
     window.kas_plugin_loaded = true;
     var manifst = {
       type: 'video',

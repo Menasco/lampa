@@ -8,7 +8,7 @@ const jquery = require('jquery');
 // Evaluate the real helpers/component; omit registration and UI templates only.
 const source = fs.readFileSync(require('node:path').join(__dirname, '../kas_plugin.js'), 'utf8');
 const code = source.slice(0, source.indexOf('  function startPlugin')) +
-  '\n globalThis.kas = {component, ouBackend, ouDefaultSources, ouPreferredSources, ouAnimeVideos, ouUrl, ouStream, ouTorrentSearch, account, base: OU_BASE}; })();';
+  '\n globalThis.kas = {component, ouBackend, ouDefaultSources, ouPreferredSources, ouAnimeVideos, ouUrl, ouStream, ouTorrentSearch, ouInstallTizenHls, account, base: OU_BASE}; })();';
 
 function harness(saved = {}, platform = 'browser') {
   const storage = {...saved};
@@ -233,7 +233,7 @@ test('full plugin registers alongside Lampac and duplicate loading is harmless',
   vm.runInNewContext(source, h.context);
   assert.equal(registered, 1);
   assert.equal(settings, 1);
-  assert.equal(h.Lampa.Manifest.plugins.version, '2.1.1');
+  assert.equal(h.Lampa.Manifest.plugins.version, '2.1.2');
   // Lampa Params.update treats a non-string values field as a lookup table.
   // Opening Settings crashed here when input registration omitted values.
   const input = registeredSettings.find(param => param.name === 'ou_backend');
@@ -496,4 +496,169 @@ test('stale manifest callbacks cannot retry another quality or start playback', 
   h.calls[0].ok('');
   assert.equal(h.calls.length, 1);
   assert.equal(h.played.length, 0);
+});
+
+function enableTizenHls(h) {
+  h.context.window.Hls = {isSupported: () => true};
+  h.Lampa.PlayerVideo = {registerTube() {}};
+}
+const fmp4 = '#EXTM3U\n#EXT-X-MAP:URI="init.mp4"\n#EXTINF:6\nsegment.m4s';
+
+test('Tizen Phantom fMP4 uses the compatibility adapter and Full HD without changing player settings', async () => {
+  const h = harness({kas_balanser: 'phantom', player: 'tizen', video_quality_default: 2160}, 'tizen');
+  enableTizenHls(h);
+  await h.component.createSource();
+  const items = [{method: 'call', url: '/lite/phantom/video'}];
+  captureDisplay(h, items)(items[0]);
+  h.calls[0].ok({url: '/proxy/2160.m3u8', quality: {'2160p': '/proxy/2160.m3u8', '1080p': '/proxy/1080.m3u8', '720p': '/proxy/720.m3u8'}});
+  assert.match(h.calls[1].url, /1080.m3u8$/);
+  h.calls[1].ok('#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\n1080-child.m3u8');
+  h.calls[2].ok(fmp4);
+  assert.equal(h.played[0].kas_phantom_hls, true);
+  assert.equal(h.played[0].card.id, 603);
+  assert.deepEqual(Object.keys(h.played[0].quality), ['1080p', '720p']);
+  assert.equal(h.storage.player, 'tizen');
+  assert.equal(h.storage.video_quality_default, 2160);
+});
+
+test('Phantom adapter does not intercept TS, other sources, browsers or devices without MSE', async () => {
+  for (const [platform, provider, supported, body] of [
+    ['tizen', 'phantom', true, '#EXTM3U\n#EXTINF:6\nsegment.ts'],
+    ['tizen', 'cdnvideohub', true, fmp4], ['browser', 'phantom', true, fmp4],
+    ['tizen', 'phantom', false, fmp4]
+  ]) {
+    const h = harness({kas_balanser: provider}, platform);
+    if (supported) enableTizenHls(h);
+    await h.component.createSource();
+    const items = [{method: 'play', url: '/proxy/video.m3u8'}];
+    captureDisplay(h, items)(items[0]);
+    h.calls[0].ok(body);
+    assert.equal(h.played[0].kas_phantom_hls, false);
+  }
+});
+
+test('next Phantom episode on Tizen resolves metadata instead of using the unchecked redirect', async () => {
+  const h = harness({kas_balanser: 'phantom', player: 'tizen'}, 'tizen');
+  enableTizenHls(h);
+  await h.component.createSource();
+  const items = [1, 2].map(episode => ({method: 'call', season: 1, episode,
+    url: '/lite/phantom/video?id=' + episode, stream: '/lite/phantom/video.m3u8?play=true&id=' + episode}));
+  captureDisplay(h, items)(items[0]);
+  h.calls[0].ok({url: '/proxy/1.m3u8'});
+  h.calls[1].ok(fmp4);
+  const next = h.played[1][1];
+  assert.equal(typeof next.url, 'function');
+  let completed = false;
+  next.url(() => completed = true);
+  assert.match(h.calls[2].url, /\/lite\/phantom\/video\?id=2/);
+  h.calls[2].ok({url: '/proxy/2.m3u8'});
+  h.calls[3].ok(fmp4);
+  assert.equal(completed, true);
+  assert.equal(next.kas_phantom_hls, true);
+});
+
+function adapterHarness() {
+  const h = harness({}, 'tizen');
+  const dom = new JSDOM();
+  h.context.window = dom.window;
+  h.context.$ = jquery(dom.window);
+  const instances = [], errors = [], timers = new Map();
+  let timerId = 0, loads = 0, plays = 0, adapter;
+  h.context.setTimeout = cb => { timers.set(++timerId, cb); return timerId; };
+  h.context.clearTimeout = id => timers.delete(id);
+  dom.window.HTMLMediaElement.prototype.load = () => loads++;
+  dom.window.HTMLMediaElement.prototype.play = () => { plays++; return Promise.resolve(); };
+  class Hls {
+    static isSupported() { return true; }
+    static Events = {MEDIA_ATTACHED: 'attached', MANIFEST_PARSED: 'parsed', ERROR: 'error'};
+    constructor(options) { this.options = options; this.events = {}; instances.push(this); }
+    on(event, callback) { this.events[event] = callback; }
+    emit(event, data) { this.events[event]?.(event, data); }
+    attachMedia(video) { this.video = video; video.src = 'blob:media-source'; video.load(); }
+    loadSource(url) { this.source = url; }
+    destroy() { this.destroyed = (this.destroyed || 0) + 1; }
+  }
+  dom.window.Hls = Hls;
+  const data = {kas_phantom_hls: true, url: 'https://cdn.example/master.m3u8',
+    quality: {'720p': 'https://cdn.example/720.m3u8'}, headers: {'X-Test': 'header'}};
+  h.Lampa.Player.playdata = () => data;
+  h.Lampa.PlayerVideo = {registerTube: a => adapter = a, listener: {send: (event, info) => errors.push(info)}};
+  h.api.ouInstallTizenHls();
+  let video;
+  adapter.create(v => video = v);
+  return {h, dom, instances, errors, timers, adapter, video, data, Hls,
+    loads: () => loads, plays: () => plays, close() { video.destroy(); dom.window.close(); }};
+}
+
+test('Tizen adapter uses real video, preserves MediaSource and scopes itself to the active Phantom URLs', () => {
+  const a = adapterHarness();
+  try {
+    assert.equal(a.adapter.verify(a.data.url), true);
+    assert.equal(a.adapter.verify(a.data.quality['720p']), true);
+    assert.equal(a.adapter.verify('https://other.example/video.m3u8'), false);
+    a.data.kas_phantom_hls = false;
+    assert.equal(a.adapter.verify(a.data.url), false);
+    a.data.kas_phantom_hls = true;
+    a.video.src = a.data.url;
+    const hls = a.instances[0];
+    assert.equal(a.video.tagName, 'VIDEO');
+    assert.equal(a.video.src, 'blob:media-source');
+    a.video.load();
+    assert.equal(a.loads(), 0, 'Lampa load() must not detach MSE');
+    hls.emit('attached');
+    assert.equal(hls.source, a.data.url);
+    const headers = {};
+    hls.options.xhrSetup({setRequestHeader: (k, v) => headers[k] = v});
+    assert.equal(headers['X-Test'], 'header');
+    hls.emit('parsed');
+    assert.equal(a.plays(), 1);
+    a.video.dispatchEvent(new a.dom.window.Event('playing'));
+    assert.equal(a.timers.size, 0);
+    a.video.destroy();
+    assert.equal(hls.destroyed, 1);
+    assert.equal(a.loads(), 1);
+    hls.emit('parsed');
+    assert.equal(a.plays(), 1, 'late callbacks cannot restart a closed video');
+  } finally { a.close(); }
+});
+
+test('Tizen adapter surfaces fatal HLS errors and stops loading instead of silently hanging', () => {
+  const a = adapterHarness();
+  try {
+    a.video.src = a.data.url;
+    a.instances[0].emit('error', {fatal: false, details: 'retryable'});
+    assert.equal(a.errors.length, 0);
+    a.instances[0].emit('error', {fatal: true, details: 'fragLoadError', url: 'https://secret.example/token'});
+    assert.equal(a.errors.length, 1);
+    assert.match(a.errors[0].error, /Phantom \(Tizen\).*fragLoadError/);
+    assert.equal(a.errors[0].fatal, true);
+    assert.ok(!a.errors[0].error.includes('secret'));
+    assert.equal(a.timers.size, 0);
+    assert.equal(a.instances[0].destroyed, 1);
+    a.instances[0].emit('parsed');
+    assert.equal(a.plays(), 0);
+  } finally { a.close(); }
+});
+
+test('Tizen adapter times out a silent start and cancels the watchdog when closed', () => {
+  const a = adapterHarness();
+  try {
+    a.video.src = a.data.url;
+    [...a.timers.values()][0]();
+    assert.match(a.errors[0].error, /startTimeout/);
+    a.video.src = a.data.url;
+    assert.equal(a.timers.size, 1);
+    a.video.destroy();
+    assert.equal(a.timers.size, 0);
+    assert.equal(a.instances[1].destroyed, 1);
+  } finally { a.close(); }
+});
+
+test('a synchronous Player failure is shown to the user', async () => {
+  const h = harness({kas_balanser: 'phantom'});
+  await h.component.createSource();
+  h.Lampa.Player.play = () => { throw new Error('Player startup failed'); };
+  const items = [{method: 'play', url: 'https://cdn.example/video.mp4'}];
+  assert.doesNotThrow(() => captureDisplay(h, items)(items[0]));
+  assert.match(h.notices[0], /Player startup failed/);
 });

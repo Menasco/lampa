@@ -69,7 +69,7 @@ test('former default migrates once; explicit restoration and custom servers surv
 test('default sources are available without backend discovery and start with Filmix', async () => {
   const h = harness();
   const rows = await h.component.createSource();
-  assert.deepEqual(plain(rows.map(x => x.balanser)), ['fxapi', 'phantom', 'zetflix', 'cdnvideohub', 'kinotochka', 'rutubemovie', 'vkmovie', 'kas_aniliberty', 'kas_torrents']);
+  assert.deepEqual(plain(rows.map(x => x.balanser)), ['fxapi', 'phantom', 'zetflix', 'cdnvideohub', 'kodik', 'veoveo', 'kinotochka', 'rutubemovie', 'vkmovie', 'kas_aniliberty', 'kas_torrents']);
   assert.equal(h.calls.length, 0);
   assert.equal(h.storage.kas_active_balanser, 'fxapi');
 });
@@ -233,7 +233,7 @@ test('full plugin registers alongside Lampac and duplicate loading is harmless',
   vm.runInNewContext(source, h.context);
   assert.equal(registered, 1);
   assert.equal(settings, 1);
-  assert.equal(h.Lampa.Manifest.plugins.version, '2.1.2');
+  assert.equal(h.Lampa.Manifest.plugins.version, '2.1.3');
   // Lampa Params.update treats a non-string values field as a lookup table.
   // Opening Settings crashed here when input registration omitted values.
   const input = registeredSettings.find(param => param.name === 'ou_backend');
@@ -661,4 +661,77 @@ test('a synchronous Player failure is shown to the user', async () => {
   const items = [{method: 'play', url: 'https://cdn.example/video.mp4'}];
   assert.doesNotThrow(() => captureDisplay(h, items)(items[0]));
   assert.match(h.notices[0], /Player startup failed/);
+});
+
+test('Kodik and VeoVeo are selectable defaults with their verified backends', async () => {
+  for (const [provider, base] of [['kodik', 'http://wtch.ch/'], ['veoveo', 'https://beta.mitsu.tv/api/']]) {
+    const h = harness({kas_balanser: provider});
+    const rows = await h.component.createSource();
+    assert.equal(rows.find(row => row.balanser === provider).url, base + 'lite/' + provider);
+    assert.equal(h.storage.kas_active_balanser, provider);
+    h.component.find();
+    await Promise.resolve();
+    assert.ok(h.calls[0].url.startsWith(base + 'lite/' + provider + '?'));
+    assert.match(h.calls[0].url, /kinopoisk_id=301/);
+    h.component.destroy();
+  }
+});
+
+test('custom discovery keeps Kodik and VeoVeo on the configured server', () => {
+  const h = harness({ou_backend: 'https://own.example'});
+  const rows = h.api.ouPreferredSources([
+    {balanser: 'veoveo', name: 'VeoVeo', url: 'https://own.example/lite/veoveo'},
+    {balanser: 'kodik', name: 'Kodik', url: 'https://own.example/lite/kodik'}
+  ]);
+  assert.deepEqual(plain(rows.slice(0, 2).map(row => row.balanser)), ['kodik', 'veoveo']);
+  assert.equal(rows[0].url, 'https://own.example/lite/kodik');
+});
+
+test('Kodik season and voice HTML resolves an episode with quality and timeout on Tizen', async () => {
+  const h = harness({kas_balanser: 'kodik', player: 'tizen', video_quality_default: 720}, 'tizen');
+  const dom = new JSDOM();
+  h.context.$ = jquery(dom.window);
+  await h.component.createSource();
+  let items, enter;
+  h.component.draw = (rows, handlers) => {
+    items = rows; enter = handlers.onEnter;
+    rows.forEach(row => { row.mark = () => {}; row.qualitys = row.quality; });
+  };
+  h.component.filter = () => {};
+  h.component.parse(`<div class="videos__item" data-json='{"method":"link","url":"/lite/kodik?s=1"}'>1 сезон</div>`);
+  assert.equal(h.calls[0].url, 'http://wtch.ch/lite/kodik?s=1&uid=testuid');
+  h.calls[0].ok(`<div class="videos__button active" data-json='{"method":"link","url":"/lite/kodik?s=1&kid=serial-1"}'>Мега-Аниме</div>
+    <div class="videos__item" s="1" e="1" data-json='{"method":"call","url":"/lite/kodik/video?episode=1","hls_manifest_timeout":30000}'>1 серия</div>`);
+  assert.equal(items[0].season, 1);
+  enter(items[0]);
+  assert.equal(h.calls[1].url, 'http://wtch.ch/lite/kodik/video?episode=1&uid=testuid');
+  h.calls[1].ok(JSON.stringify({method: 'play', url: 'https://cdn.example/720.m3u8',
+    quality: {'720p': 'https://cdn.example/720.m3u8', '480p': 'https://cdn.example/480.m3u8'}, hls_manifest_timeout: 30000}));
+  assert.equal(h.played[0].url, 'https://cdn.example/720.m3u8');
+  assert.equal(h.played[0].quality['480p'], 'https://cdn.example/480.m3u8');
+  assert.equal(h.played[0].hls_manifest_timeout, 30000);
+  assert.equal(h.played[0].kas_phantom_hls, undefined);
+  h.component.destroy(); dom.window.close();
+});
+
+test('VeoVeo keeps all seasons and passes direct episode playlists unchanged to Tizen', async () => {
+  const h = harness({kas_balanser: 'veoveo', player: 'tizen'}, 'tizen');
+  const dom = new JSDOM(); h.context.$ = jquery(dom.window);
+  await h.component.createSource();
+  let items, enter, filter;
+  h.component.draw = (rows, handlers) => {
+    items = rows; enter = handlers.onEnter;
+    rows.forEach(row => { row.mark = () => {}; });
+  };
+  h.component.filter = data => filter = data;
+  h.component.parse([1, 2].map(s => `<div class="videos__item" data-json='{"method":"link","url":"/lite/veoveo?s=${s}"}'>${s} сезон</div>`).join(''));
+  h.calls[0].ok([1, 2].map(e => `<div class="videos__item" s="1" e="${e}" data-json='{"method":"play","url":"https://cdn.example/episode${e}.m3u8?pl=public-signature","hls_manifest_timeout":30000}'>${e} серия</div>`).join(''));
+  assert.deepEqual(plain(filter.season), ['1 сезон', '2 сезон']);
+  enter(items[0]);
+  assert.equal(h.played[0].url, 'https://cdn.example/episode1.m3u8?pl=public-signature');
+  assert.equal(h.played[1][1].url, 'https://cdn.example/episode2.m3u8?pl=public-signature');
+  assert.equal(h.played[1][1].episode, 2);
+  assert.equal(h.played[1][1].hls_manifest_timeout, 30000);
+  assert.equal(h.calls.length, 1, 'direct playback does not repeat the API request');
+  h.component.destroy(); dom.window.close();
 });

@@ -2,14 +2,14 @@
  * Kas plugin — плагин онлайн-просмотра для Lampa.
  * Основан на официальном фронтенде Lampac (интерфейс как у BwaRC/online_mod:
  * сверху фильтр «Источник», справа выбор озвучки, сезоны/серии списком).
- * Бэкенд настраивается: Настройки → Kas plugin (Lumio; Filmix через WTCH).
+ * Бэкенд настраивается: Настройки → Kas plugin (Lumio; Filmix, Kodik, Rutube через WTCH).
  * Установка: https://menasco.github.io/lampa/kas_plugin.js
  */
 (function() {
   'use strict';
 
   if (window.kas_plugin_loaded) return;
-  var OU_VERSION = '2.1.2';
+  var OU_VERSION = '2.1.3';
   var OU_DEFAULT = 'https://beta.mitsu.tv/api/';
   var OU_FILMIX = 'http://wtch.ch/';
   function ouBackend(value) {
@@ -69,7 +69,7 @@
     ];
   }
   function ouPreferredSources(rows) {
-    var order = ['filmix', 'filmixtv', 'fxapi', 'phantom', 'zetflix', 'cdnvideohub', 'veoveo', 'kinotochka', 'hdvb', 'vibix', 'rutubemovie', 'rutube', 'vkmovie', 'vkvideo'];
+    var order = ['filmix', 'filmixtv', 'fxapi', 'phantom', 'zetflix', 'cdnvideohub', 'kodik', 'veoveo', 'kinotochka', 'hdvb', 'vibix', 'rutubemovie', 'rutube', 'vkmovie', 'vkvideo'];
     return (Array.isArray(rows) ? rows : []).filter(function (row) {
       return row && row.show !== false && order.indexOf(String(row.balanser || '').toLowerCase()) !== -1 && /^https?:\/\//i.test(row.url || '');
     }).sort(function (a, b) {
@@ -82,6 +82,8 @@
       {balanser: 'phantom', name: 'Phantom', url: OU_BASE + 'lite/phantom'},
       {balanser: 'zetflix', name: 'Zetflix', url: OU_BASE + 'lite/zetflix'},
       {balanser: 'cdnvideohub', name: 'VideoHUB', url: OU_BASE + 'lite/cdnvideohub'},
+      {balanser: 'kodik', name: 'Kodik', url: OU_FILMIX + 'lite/kodik'},
+      {balanser: 'veoveo', name: 'VeoVeo', url: OU_BASE + 'lite/veoveo'},
       {balanser: 'kinotochka', name: 'Kinotochka', url: OU_BASE + 'lite/kinotochka'},
       {balanser: 'rutubemovie', name: 'Rutube', url: OU_FILMIX + 'lite/rutubemovie'},
       {balanser: 'vkmovie', name: 'VK Видео', url: OU_BASE + 'lite/vkmovie'}
@@ -607,7 +609,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       voice: []
     };
 
-    balansers_with_search = ['fxapi', 'filmix', 'phantom', 'zetflix', 'cdnvideohub', 'veoveo', 'kinotochka', 'rutube', 'vk', 'kas_aniliberty'];
+    balansers_with_search = ['fxapi', 'filmix', 'phantom', 'zetflix', 'cdnvideohub', 'kodik', 'veoveo', 'kinotochka', 'rutube', 'vk', 'kas_aniliberty'];
 
     function balanserName(j) {
       var bals = j.balanser;
@@ -2260,7 +2262,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       }
     } catch (e) {}
     if (Lampa.Manifest.app_digital >= 177) {
-      var balansers_sync = ['filmix', 'fxapi', 'phantom', 'zetflix', 'cdnvideohub', 'veoveo', 'kinotochka', 'rutubemovie', 'vkmovie', 'kas_aniliberty'];
+      var balansers_sync = ['filmix', 'fxapi', 'phantom', 'zetflix', 'cdnvideohub', 'kodik', 'veoveo', 'kinotochka', 'rutubemovie', 'vkmovie', 'kas_aniliberty'];
       balansers_sync.forEach(function(name) {
         Lampa.Storage.sync('online_choice_' + name, 'object_object');
       });
@@ -2281,7 +2283,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       Lampa.SettingsApi.addParam({
         component: 'kas_plugin',
         param: { name: 'ou_backend', type: 'input', values: '', 'default': OU_DEFAULT },
-        field: { name: 'Бэкенд источников (Lampac)', description: 'Lumio (HTTPS): Phantom, Zetflix, VideoHUB и другие. Filmix отдельно через WTCH. После смены адреса перезапустите Lampa.' },
+        field: { name: 'Бэкенд источников (Lampac)', description: 'Lumio (HTTPS): Phantom, Zetflix, VideoHUB, VeoVeo и другие. Filmix, Kodik и Rutube отдельно через WTCH. После смены адреса перезапустите Lampa.' },
         onChange: function () { try { Lampa.Noty.show('Перезапустите Lampa, чтобы применить бэкенд'); } catch (e) {} }
       });
     }

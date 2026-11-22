@@ -9,7 +9,7 @@
   'use strict';
 
   if (window.kas_plugin_loaded) return;
-  var OU_VERSION = '2.2.1';
+  var OU_VERSION = '2.2.2';
   var OU_DEFAULT = 'https://beta.mitsu.tv/api/';
   var OU_FILMIX = 'http://wtch.ch/';
   var OU_BWA = 'https://api.bwa.ad/';
@@ -54,7 +54,7 @@
     ];
   }
   function ouPreferredSources(rows) {
-    var order = ['filmix', 'filmixtv', 'fxapi', 'phantom', 'zetflix', 'cdnvideohub', 'kodik', 'veoveo', 'collaps', 'kinotochka', 'hdvb', 'vibix', 'rutubemovie', 'rutube', 'vkmovie', 'vkvideo'];
+    var order = ['filmix', 'filmixtv', 'fxapi', 'hdvb', 'videodb', 'phantom', 'zetflix', 'cdnvideohub', 'kodik', 'veoveo', 'collaps', 'kinotochka', 'vibix', 'rutubemovie', 'rutube', 'vkmovie', 'vkvideo'];
     return (Array.isArray(rows) ? rows : []).filter(function (row) {
       return row && row.show !== false && order.indexOf(String(row.balanser || '').toLowerCase()) !== -1 && /^https?:\/\//i.test(row.url || '');
     }).sort(function (a, b) {
@@ -64,6 +64,8 @@
   function ouDefaultSources() {
     return ouPreferredSources([
       {balanser: 'fxapi', name: 'Filmix', url: OU_FILMIX + 'lite/fxapi'},
+      {balanser: 'hdvb', name: 'HDVB', url: OU_FILMIX + 'lite/hdvb'},
+      {balanser: 'videodb', name: 'VideoDB', url: OU_BWA + 'lite/videodb'},
       {balanser: 'phantom', name: 'Phantom', url: OU_BASE + 'lite/phantom'},
       {balanser: 'zetflix', name: 'Zetflix', url: OU_BASE + 'lite/zetflix'},
       {balanser: 'cdnvideohub', name: 'VideoHUB', url: OU_BASE + 'lite/cdnvideohub'},
@@ -177,7 +179,7 @@
       if (stream.quality) group.quality[stream.quality] = url;
       if (stream.hls === 'hlsjs' || stream.hls === 'demuxed') {
         group.hls_type = 'hlsjs';
-        group.kas_collaps_hls = true;
+        group.kas_bwa_hls = true;
       }
     });
     return voice ? groups.filter(function (group) { return group.voice_name === voice; }) : groups;
@@ -199,7 +201,7 @@
       name: 'kas_phantom_hls',
       verify: function (url) {
         var data = Lampa.Player.playdata && Lampa.Player.playdata();
-        if (!data || !(data.kas_phantom_hls || data.kas_collaps_hls) || !ouTizenHlsSupported()) return false;
+        if (!data || !(data.kas_phantom_hls || data.kas_bwa_hls) || !ouTizenHlsSupported()) return false;
         if (data.url === url) return true;
         return Object.keys(data.quality || {}).some(function (key) { return data.quality[key] === url; });
       },
@@ -217,7 +219,7 @@
           if (hls) { hls.destroy(); hls = null; }
           // Only an error code, never a signed URL or a server response body.
           var code = String(detail || 'playbackError').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 60);
-          var provider = data.kas_collaps_hls ? 'Collaps' : 'Phantom';
+          var provider = data.kas_bwa_hls ? 'BWA' : 'Phantom';
           var message = provider + ' (Tizen): видео не запустилось [' + code + ']. Попробуйте другую озвучку или качество.';
           Lampa.Noty.show(message);
           Lampa.PlayerVideo.listener.send('error', {error: message, fatal: true});
@@ -687,7 +689,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       voice: []
     };
 
-    balansers_with_search = ['fxapi', 'filmix', 'phantom', 'zetflix', 'cdnvideohub', 'kodik', 'veoveo', 'collaps', 'kinotochka', 'rutube', 'vk', 'kas_aniliberty'];
+    balansers_with_search = ['fxapi', 'filmix', 'hdvb', 'videodb', 'phantom', 'zetflix', 'cdnvideohub', 'kodik', 'veoveo', 'collaps', 'kinotochka', 'rutube', 'vk', 'kas_aniliberty'];
 
     function balanserName(j) {
       var bals = j.balanser;
@@ -828,7 +830,11 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
           query.push('serial=' + (object.movie.name ? 1 : 0));
           if (object.movie.imdb_id) query.push('imdb_id=' + (object.movie.imdb_id || ''));
           if (object.movie.kinopoisk_id) query.push('kinopoisk_id=' + (object.movie.kinopoisk_id || ''));
-          var url = ouSourceBase(source) + 'externalids?' + query.join('&');
+          // The BWA API has no externalids route. Use the usual Lampac backend
+          // so IDs are available even when the saved choice is a BWA source.
+          var base = ouSourceBase(source);
+          if (base === OU_BWA) base = OU_BASE === OU_BWA ? OU_DEFAULT : OU_BASE;
+          var url = base + 'externalids?' + query.join('&');
           network.timeout(10000);
           network.silent(account(url), function(json) {
             if (typeof json === 'string') {
@@ -872,7 +878,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       if (object.movie.imdb_id) query.push('imdb_id=' + (object.movie.imdb_id || ''));
       if (object.movie.kinopoisk_id) query.push('kinopoisk_id=' + (object.movie.kinopoisk_id || ''));
       if (object.movie.tmdb_id) query.push('tmdb_id=' + (object.movie.tmdb_id || ''));
-      if (url.split('?')[0] === OU_COLLAPS) {
+      if (url.indexOf(OU_BWA) === 0) {
         if (!object.movie.tmdb_id && (card_source === 'tmdb' || card_source === 'cub')) query.push('tmdb_id=' + encodeURIComponent(object.movie.id));
         query.push('dalt=2');
         if (object.movie.name) {
@@ -1435,7 +1441,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
     this.applyStream = function(play, stream) {
       // A resolved episode can require its own headers, subtitles and timeout.
       ['url', 'quality', 'headers', 'subtitles', 'subtitle', 'subtitles_call',
-        'segments', 'hls_manifest_timeout', 'hls_type', 'url_reserve', 'thumbnail', 'kas_phantom_hls', 'kas_collaps_hls'].forEach(function (key) {
+        'segments', 'hls_manifest_timeout', 'hls_type', 'url_reserve', 'thumbnail', 'kas_phantom_hls', 'kas_bwa_hls'].forEach(function (key) {
         if (typeof stream[key] !== 'undefined') play[key] = stream[key];
       });
       if (stream.vast && stream.vast.url) {
@@ -2530,7 +2536,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       }
     } catch (e) {}
     if (Lampa.Manifest.app_digital >= 177) {
-      var balansers_sync = ['filmix', 'fxapi', 'phantom', 'zetflix', 'cdnvideohub', 'kodik', 'veoveo', 'collaps', 'kinotochka', 'rutubemovie', 'vkmovie', 'kas_aniliberty'];
+      var balansers_sync = ['filmix', 'fxapi', 'hdvb', 'videodb', 'phantom', 'zetflix', 'cdnvideohub', 'kodik', 'veoveo', 'collaps', 'kinotochka', 'rutubemovie', 'vkmovie', 'kas_aniliberty'];
       balansers_sync.forEach(function(name) {
         Lampa.Storage.sync('online_choice_' + name, 'object_object');
       });

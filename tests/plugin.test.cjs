@@ -308,7 +308,7 @@ test('Collaps JSON resolves films and next episodes without sending account cred
   assert.equal(resolved.url,'https://cdn.example/24.m3u8');
   const play = h.component.applyStream({}, resolved);
   assert.equal(play.hls_type,'hlsjs');
-  assert.equal(play.kas_collaps_hls,true);
+  assert.equal(play.kas_bwa_hls,true);
   h.component.destroy();
 });
 
@@ -324,13 +324,45 @@ test('former default migrates once; explicit restoration and custom servers surv
 test('default sources are available without backend discovery and start with Filmix', async () => {
   const h = harness();
   const rows = await h.component.createSource();
-  assert.deepEqual(plain(rows.map(x => x.balanser)), ['fxapi', 'phantom', 'zetflix', 'cdnvideohub', 'kodik', 'veoveo', 'collaps', 'kinotochka', 'rutubemovie', 'vkmovie', 'kas_aniliberty']);
+  assert.deepEqual(plain(rows.map(x => x.balanser)), ['fxapi', 'hdvb', 'videodb', 'phantom', 'zetflix', 'cdnvideohub', 'kodik', 'veoveo', 'collaps', 'kinotochka', 'rutubemovie', 'vkmovie', 'kas_aniliberty']);
   assert.equal(h.calls.length, 0);
   assert.equal(h.storage.kas_active_balanser, 'fxapi');
+  assert.equal(rows.find(row => row.balanser === 'hdvb').url, 'http://wtch.ch/lite/hdvb');
+  assert.equal(rows.find(row => row.balanser === 'videodb').url, 'https://api.bwa.ad/lite/videodb');
 });
 
-test('unsupported saved source and another plugin selection do not select HDVB', async () => {
-  const h = harness({kas_balanser: 'hdvb', online_balanser: 'hdvb'});
+test('VideoDB gets external IDs, confirms the first episode, and resolves later episodes in the selected voice', async () => {
+  const h = harness({kas_balanser:'videodb'},'tizen',{id:1396,name:'Во все тяжкие',original_name:'Breaking Bad',source:'tmdb'});
+  const row = h.api.ouDefaultSources().find(item => item.balanser === 'videodb');
+  await h.component.startSource([row]);
+  const ids = h.component.externalids();
+  assert.equal(new URL(h.calls[0].url).host, 'beta.mitsu.tv');
+  h.calls[0].ok({imdb_id:'tt0903747',kinopoisk_id:404900});
+  await ids;
+  const pending = h.component.checkSources([row]);
+  const first = new URL(h.calls[1].url).searchParams;
+  assert.equal(first.get('tmdb_id'), '1396');
+  assert.equal(first.get('kinopoisk_id'), '404900');
+  assert.equal(first.get('season'), '1');
+  assert.equal(first.get('episode'), '1');
+  h.calls[1].ok({episodes:[1,2], streams:[{kind:'hls',voice:'LostFilm',url:'https://cdn.example/1.m3u8'}]});
+  assert.equal((await pending)[0].balanser, 'videodb');
+  let list;
+  h.component.display = videos => { list = videos; };
+  h.component.find();
+  await tick();
+  assert.equal(h.calls.length, 2);
+  assert.deepEqual(plain(list.map(item => item.episode)), [1,2]);
+  let stream;
+  h.component.getFileUrl(list[1], value => { stream = value; });
+  assert.deepEqual(new URL(h.calls[2].url).searchParams.getAll('episode'), ['2']);
+  h.calls[2].ok({streams:[{kind:'hls',voice:'LostFilm',url:'https://cdn.example/2.m3u8'}]});
+  assert.equal(stream.url, 'https://cdn.example/2.m3u8');
+  h.component.destroy();
+});
+
+test('unsupported saved source falls back to Filmix and ignores another plugin’s HDVB selection', async () => {
+  const h = harness({kas_balanser: 'not-supported', online_balanser: 'hdvb'});
   await h.component.createSource();
   assert.equal(h.storage.kas_active_balanser, 'fxapi');
   assert.equal(h.storage.online_balanser, 'hdvb');
@@ -475,7 +507,7 @@ test('full plugin registers alongside Lampac and duplicate loading is harmless',
   vm.runInNewContext(source, h.context);
   assert.equal(registered, 1);
   assert.equal(settings, 1);
-  assert.equal(h.Lampa.Manifest.plugins.version, '2.2.1');
+  assert.equal(h.Lampa.Manifest.plugins.version, '2.2.2');
   // Lampa Params.update treats a non-string values field as a lookup table.
   // Opening Settings crashed here when input registration omitted values.
   const input = registeredSettings.find(param => param.name === 'ou_backend');

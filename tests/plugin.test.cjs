@@ -8,7 +8,7 @@ const jquery = require('jquery');
 // Evaluate the real helpers/component; omit registration and UI templates only.
 const source = fs.readFileSync(require('node:path').join(__dirname, '../kas_plugin.js'), 'utf8');
 const code = source.slice(0, source.indexOf('  function startPlugin')) +
-  '\n globalThis.kas = {component, ouBackend, ouDefaultSources, ouPreferredSources, ouAnimeVideos, ouUrl, ouStream, ouTorrentSearch, ouInstallTizenHls, ouSortItems, ouKodikParts, ouBwaStreams, account, base: OU_BASE}; })();';
+  '\n globalThis.kas = {component, ouBackend, ouDefaultSources, ouPreferredSources, ouAnimeVideos, ouUrl, ouStream, ouInstallTizenHls, ouSortItems, ouKodikParts, ouBwaStreams, account, base: OU_BASE}; })();';
 
 function harness(saved = {}, platform = 'browser', movie) {
   const storage = {...saved};
@@ -71,7 +71,6 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 test('card discovery excludes empty, unrelated and failed providers, follows seasons, reuses catalog and removes old selection', async () => {
   const h = htmlHarness({kas_balanser: 'empty'});
   const rows = ['empty', 'found', 'unrelated', 'down'].map(balanser => ({balanser, name: balanser, url: 'https://example.com/' + balanser}));
-  rows.push({balanser: 'kas_torrents', name: 'Торренты', url: 'kas:torrents'});
   await h.component.startSource(rows);
   const pending = h.component.checkSources(rows);
   assert.equal(h.calls.length, 3, 'bounded concurrency');
@@ -87,14 +86,19 @@ test('card discovery excludes empty, unrelated and failed providers, follows sea
   h.component.find(); await tick();
   assert.match(parsed, /1 сезон/);
   assert.equal(h.calls.length, 5, 'selected catalog was not fetched again');
-  const other = new h.api.component({movie: {id: 603, title: 'Матрица', original_title: 'The Matrix', release_date: '1999-03-30', imdb_id: 'tt0133093', kinopoisk_id: 301}});
+  const other = new h.api.component({kasReuseSources: true, movie: {id: 603, title: 'Матрица', original_title: 'The Matrix', release_date: '1999-03-30', imdb_id: 'tt0133093', kinopoisk_id: 301}});
   other.activity = {loader() {}, toggle() {}};
   assert.equal((await other.checkSources(rows)).length, 1);
   assert.equal(h.calls.length, 5, 'switching sources reuses card-specific discovery');
+  const reopened = new h.api.component({movie: {id: 603, title: 'Матрица', original_title: 'The Matrix', release_date: '1999-03-30', imdb_id: 'tt0133093', kinopoisk_id: 301}});
+  reopened.activity = {loader() {}, toggle() {}};
+  const reopenedPending = reopened.checkSources(rows);
+  assert.equal(h.calls.length, 8, 'reopening the same card checks availability again');
+  reopened.destroy(); await reopenedPending;
   const different = new h.api.component({movie: {id: 129, title: 'Унесённые призраками'}});
   different.activity = {loader() {}, toggle() {}};
   const newPending = different.checkSources(rows);
-  assert.equal(h.calls.length, 8, 'another card must be checked separately');
+  assert.equal(h.calls.length, 11, 'another card must be checked separately');
   different.destroy(); await newPending;
   h.component.destroy(); other.destroy();
 });
@@ -183,6 +187,9 @@ test('manual refresh invalidates negative results and discovers a recovered prov
 test('Collaps series preserve the selected voice in lazy episode and playlist resolvers', async () => {
   const h = harness({kas_balanser:'collaps'},'tizen',{id:1396,name:'Во все тяжкие',original_name:'Breaking Bad',number_of_seasons:5});
   await h.component.startSource([h.api.ouDefaultSources().find(row=>row.balanser==='collaps')]);
+  const root = new URL(h.component.requestParams('https://api.bwa.ad/lite/collaps'));
+  assert.equal(root.searchParams.get('season'), '1');
+  assert.equal(root.searchParams.get('episode'), '1');
   let videos;
   h.component.display = value => videos=value;
   h.component.request('https://api.bwa.ad/lite/collaps?season=2&episode=1');
@@ -191,9 +198,62 @@ test('Collaps series preserve the selected voice in lazy episode and playlist re
   assert.ok(videos.every(item=>item.season===2&&item.kas_bwa_voice==='LostFilm'));
   let stream;
   h.component.getFileUrl(videos[2],value=>stream=value);
-  assert.equal(new URL(h.calls[1].url).searchParams.get('episode'),'3');
+  const query = new URL(h.calls[1].url).searchParams;
+  assert.deepEqual(query.getAll('episode'), ['3']);
+  assert.deepEqual(query.getAll('season'), ['2']);
   h.calls[1].ok({streams:[{kind:'hls',voice:'Другой перевод',url:'https://cdn.example/wrong.m3u8'}]});
   assert.equal(stream,false,'do not silently switch a missing translation');
+  h.component.destroy();
+});
+
+test('Collaps discovery switches BWA nodes and fetches only the current card embed', async () => {
+  const h = htmlHarness({account_email: 'private@example.com'});
+  const http = [], messages = [];
+  let socket;
+  h.context.WebSocket = class {
+    constructor(url) { socket = this; this.url = url; this.readyState = 1; }
+    send(body) { messages.push(JSON.parse(body)); }
+    close() { this.closed = true; }
+    receive(method, args) { this.onmessage({data: JSON.stringify({method, args})}); }
+  };
+  h.context.XMLHttpRequest = class {
+    open(method, url) { Object.assign(this, {method, url}); }
+    send(body) { this.body = body; http.push(this); }
+    abort() {}
+  };
+  const source = h.api.ouDefaultSources().find(row => row.balanser === 'collaps');
+  const pending = h.component.checkSources([source]);
+  const main = socket;
+  assert.equal(new URL(main.url).host, 'api.bwa.ad');
+  main.onerror();
+  assert.equal(main.closed, true);
+  assert.equal(new URL(socket.url).host, 'rust.bwa.ad');
+  const id = new URL(socket.url).searchParams.get('id');
+  assert.match(id, /^[a-f0-9]{32}$/);
+  assert.equal(h.calls.length, 0);
+  socket.onopen();
+  assert.equal(messages[0].method, 'RchRegistry');
+  socket.receive('RchRegistry', []);
+  const catalogUrl = new URL(h.calls[0].url);
+  assert.equal(catalogUrl.host, 'rust.bwa.ad');
+  const query = catalogUrl.searchParams;
+  assert.deepEqual(query.getAll('kinopoisk_id'), ['301']);
+  assert.equal(query.get('nws_id'), id);
+  assert.equal(query.get('rchtype'), 'cors');
+  assert.equal(query.has('account_email'), false);
+  socket.receive('RchClient', ['other', 'https://api.luxembd.ws/embed/kp/129', null]);
+  socket.receive('RchClient', ['post', 'https://api.luxembd.ws/embed/kp/301', 'data']);
+  assert.equal(http.length, 0);
+  socket.receive('RchClient', ['match', 'https://api.luxembd.ws/embed/kp/301', null]);
+  assert.equal(http[0].method, 'GET');
+  http[0].status = 200;
+  http[0].responseText = '<player>';
+  http[0].onload();
+  assert.equal(http[1].url, 'https://rust.bwa.ad/rch/result?id=match');
+  assert.equal(http[1].body, '<player>');
+  h.calls[0].ok({streams: [{kind: 'hls', url: 'https://cdn.example/video.m3u8'}]});
+  assert.equal((await pending)[0].balanser, 'collaps');
+  assert.equal(socket.closed, true);
   h.component.destroy();
 });
 
@@ -244,8 +304,11 @@ test('Collaps JSON resolves films and next episodes without sending account cred
   assert.equal(videos[0].quality['480p'],'https://cdn.example/480.m3u8');
   let resolved;
   h.component.getFileUrl({method:'call',url:row.url+'?season=2&episode=24',kas_bwa_voice:'Дубляж'},data=>resolved=data);
-  h.calls[1].ok({streams:[{kind:'hls',voice:'Дубляж',quality:'720p',url:'https://cdn.example/24.m3u8'}]});
+  h.calls[1].ok({streams:[{kind:'hls',hls:'hlsjs',voice:'Дубляж',quality:'720p',url:'https://cdn.example/24.m3u8'}]});
   assert.equal(resolved.url,'https://cdn.example/24.m3u8');
+  const play = h.component.applyStream({}, resolved);
+  assert.equal(play.hls_type,'hlsjs');
+  assert.equal(play.kas_collaps_hls,true);
   h.component.destroy();
 });
 
@@ -261,7 +324,7 @@ test('former default migrates once; explicit restoration and custom servers surv
 test('default sources are available without backend discovery and start with Filmix', async () => {
   const h = harness();
   const rows = await h.component.createSource();
-  assert.deepEqual(plain(rows.map(x => x.balanser)), ['fxapi', 'phantom', 'zetflix', 'cdnvideohub', 'kodik', 'veoveo', 'collaps', 'kinotochka', 'rutubemovie', 'vkmovie', 'kas_aniliberty', 'kas_torrents']);
+  assert.deepEqual(plain(rows.map(x => x.balanser)), ['fxapi', 'phantom', 'zetflix', 'cdnvideohub', 'kodik', 'veoveo', 'collaps', 'kinotochka', 'rutubemovie', 'vkmovie', 'kas_aniliberty']);
   assert.equal(h.calls.length, 0);
   assert.equal(h.storage.kas_active_balanser, 'fxapi');
 });
@@ -278,7 +341,7 @@ test('custom backend authorization failure leaves independent sources', async ()
   const pending = h.component.createSource();
   h.calls[0].ok({accsdb: true, msg: 'Login required'});
   const rows = await pending;
-  assert.deepEqual(plain(rows.map(x => x.balanser)), ['kas_aniliberty', 'kas_torrents']);
+  assert.deepEqual(plain(rows.map(x => x.balanser)), ['kas_aniliberty']);
   assert.match(h.notices[0], /авторизац/);
 });
 
@@ -286,7 +349,7 @@ test('custom backend timeout also leaves independent sources', async () => {
   const h = harness({ou_backend: 'https://custom.example'});
   const pending = h.component.createSource();
   h.calls[0].fail();
-  assert.equal((await pending).length, 2);
+  assert.deepEqual(plain((await pending).map(row => row.balanser)), ['kas_aniliberty']);
 });
 
 test('only desired providers and HTTP URLs pass custom discovery', () => {
@@ -294,7 +357,7 @@ test('only desired providers and HTTP URLs pass custom discovery', () => {
   const rows = h.api.ouPreferredSources([{balanser: 'hdvb', url: 'https://x/', show: false},
     {balanser: 'filmix', url: 'javascript:bad'}, {balanser: 'zetflix', url: 'https://x/zet'},
     {balanser: 'fxapi', url: 'https://x/filmix'}]);
-  assert.deepEqual(plain(rows.map(x => x.balanser)), ['fxapi', 'zetflix', 'kas_aniliberty', 'kas_torrents']);
+  assert.deepEqual(plain(rows.map(x => x.balanser)), ['fxapi', 'zetflix', 'kas_aniliberty']);
 });
 
 test('AniLiberty bypasses external-ID and account services', async () => {
@@ -349,19 +412,6 @@ test('malformed anime response produces a recoverable error', () => {
   h.component.request('kas:anime/42');
   h.calls[0].ok({error: 'bad'});
   assert.match(error.msg, /неожиданный/);
-});
-
-test('torrent shortcut uses native search and does not change preferred source', async () => {
-  const h = harness({kas_balanser: 'fxapi', jackett_url: 'https://parser.example', torrserver_url: 'http://192.168.1.2:8090'});
-  h.context.window.lampa_settings = {torrents_use: false, read_only: true};
-  await h.component.createSource();
-  h.component.changeBalanser('kas_torrents');
-  assert.equal(h.activities[0].component, 'torrents');
-  assert.equal(h.activities[0].search, 'The Matrix');
-  assert.equal(h.storage.kas_balanser, 'fxapi');
-  assert.equal(h.calls.length, 0);
-  assert.equal(h.context.window.lampa_settings.torrents_use, true);
-  assert.equal(h.context.window.lampa_settings.read_only, true);
 });
 
 test('backend errors and authorization messages render without auto-switch timers', () => {
@@ -425,7 +475,7 @@ test('full plugin registers alongside Lampac and duplicate loading is harmless',
   vm.runInNewContext(source, h.context);
   assert.equal(registered, 1);
   assert.equal(settings, 1);
-  assert.equal(h.Lampa.Manifest.plugins.version, '2.2.0');
+  assert.equal(h.Lampa.Manifest.plugins.version, '2.2.1');
   // Lampa Params.update treats a non-string values field as a lookup table.
   // Opening Settings crashed here when input registration omitted values.
   const input = registeredSettings.find(param => param.name === 'ou_backend');
@@ -561,46 +611,6 @@ test('RCH starts once when a resolver requests it, then retries only once', () =
   h.calls[1].ok({rch: true});
   assert.equal(handshake, 1);
   assert.equal(result, false);
-});
-
-test('empty torrent configuration gets a parser and a TorrServer setup action', () => {
-  const h = harness();
-  h.component.openTorrents();
-  assert.equal(h.storage.jackett_url, 'https://jacred.su');
-  assert.equal(h.activities.length, 0);
-  assert.equal(h.selections[0].items[0].settings, 'server');
-  h.selections[0].onSelect(h.selections[0].items[0]);
-  assert.deepEqual(h.settingsOpened, ['server']);
-  h.selections[0].onSelect(h.selections[0].items[1]);
-  assert.equal(h.activities[0].component, 'torrents');
-});
-
-test('torrent setup respects secondary parsers, Prowlarr, API keys and configured servers', () => {
-  const h = harness({parser_torrent_type: 'prowlarr', parser_use_link: 'two', prowlarr_url_two: 'https://private.example',
-    prowlarr_key_two: 'private', torrserver_use_link: 'two', torrserver_url_two: 'http://192.168.1.2:8090'});
-  h.component.openTorrents();
-  assert.equal(h.activities.length, 1);
-  assert.equal(h.storage.prowlarr_key_two, 'private');
-  assert.equal(h.storage.jackett_url, undefined);
-  const missing = harness({parser_torrent_type: 'prowlarr'});
-  missing.component.openTorrents();
-  assert.equal(missing.storage.jackett_url, undefined);
-  assert.equal(missing.selections[0].items[0].settings, 'parser');
-  const keyOnly = harness({jackett_key: 'private'});
-  keyOnly.component.openTorrents();
-  assert.equal(keyOnly.storage.jackett_url, undefined);
-});
-
-test('native torrent query honors language/year and series names', () => {
-  const h = harness({parse_lang: 'lg_df_year'});
-  const query = h.api.ouTorrentSearch({name: 'Во все тяжкие', original_name: 'Breaking Bad', first_air_date: '2008-01-20'});
-  assert.equal(query.search, 'Во все тяжкие Breaking Bad 2008');
-  assert.equal(query.search_one, 'Во все тяжкие');
-  assert.equal(query.search_two, 'Breaking Bad');
-  assert.equal(query.movie.title, 'Во все тяжкие');
-  assert.equal(query.movie.original_title, 'Breaking Bad');
-  assert.equal(query.movie.original_name, 'Breaking Bad');
-  assert.deepEqual(plain(query.movie.genres), []);
 });
 
 test('catalog → season → voice → resolved episode reaches Player through real HTML parsing', async () => {

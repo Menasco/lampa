@@ -8,9 +8,9 @@ const jquery = require('jquery');
 // Evaluate the real helpers/component; omit registration and UI templates only.
 const source = fs.readFileSync(require('node:path').join(__dirname, '../kas_plugin.js'), 'utf8');
 const code = source.slice(0, source.indexOf('  function startPlugin')) +
-  '\n globalThis.kas = {component, ouBackend, ouDefaultSources, ouPreferredSources, ouAnimeVideos, ouUrl, ouStream, ouTorrentSearch, ouInstallTizenHls, account, base: OU_BASE}; })();';
+  '\n globalThis.kas = {component, ouBackend, ouDefaultSources, ouPreferredSources, ouAnimeVideos, ouUrl, ouStream, ouTorrentSearch, ouInstallTizenHls, ouSortItems, ouKodikParts, ouBwaStreams, account, base: OU_BASE}; })();';
 
-function harness(saved = {}, platform = 'browser') {
+function harness(saved = {}, platform = 'browser', movie) {
   const storage = {...saved};
   const calls = [], notices = [], activities = [], played = [], selections = [], settingsOpened = [], fields = new Map();
   function element(key = 'root') {
@@ -50,12 +50,204 @@ function harness(saved = {}, platform = 'browser') {
   const context = {window: {}, location: {host: 'lampa.mx'}, Lampa, console, setTimeout, clearTimeout,
     setInterval: () => { throw Error('Unexpected automatic switching timer'); }, clearInterval, $: element};
   vm.runInNewContext(code, context);
-  const component = new context.kas.component({movie: {id: 603, title: 'Матрица', original_title: 'The Matrix',
+  const component = new context.kas.component({movie: movie || {id: 603, title: 'Матрица', original_title: 'The Matrix',
     release_date: '1999-03-30', imdb_id: 'tt0133093', kinopoisk_id: 301}});
   component.activity = {loader() {}, toggle() {}};
   return {api: context.kas, component, storage, calls, notices, activities, played, selections, settingsOpened, fields, context, Lampa};
 }
 const plain = x => JSON.parse(JSON.stringify(x));
+
+function catalogRow(data, text = '', cls = 'videos__item', extra = '') {
+  return `<div class="${cls}" data-json='${JSON.stringify(data).replace(/'/g, '&#39;')}' ${extra}>${text}</div>`;
+}
+function htmlHarness(saved, movie) {
+  const h = harness(saved, 'browser', movie);
+  const dom = new JSDOM('');
+  h.context.$ = jquery(dom.window);
+  return h;
+}
+const tick = () => new Promise(resolve => setImmediate(resolve));
+
+test('card discovery excludes empty, unrelated and failed providers, follows seasons, reuses catalog and removes old selection', async () => {
+  const h = htmlHarness({kas_balanser: 'empty'});
+  const rows = ['empty', 'found', 'unrelated', 'down'].map(balanser => ({balanser, name: balanser, url: 'https://example.com/' + balanser}));
+  rows.push({balanser: 'kas_torrents', name: 'Торренты', url: 'kas:torrents'});
+  await h.component.startSource(rows);
+  const pending = h.component.checkSources(rows);
+  assert.equal(h.calls.length, 3, 'bounded concurrency');
+  h.calls[0].ok('');
+  h.calls[2].ok(catalogRow({method: 'link', similar: true, title: 'Другая картина', year: 1999, url: 'https://example.com/wrong'}));
+  h.calls[3].fail({status: 503});
+  h.calls[1].ok(catalogRow({method: 'link', url: 'https://example.com/season'}, '1 сезон'));
+  h.calls[4].ok(catalogRow({method: 'call', url: 'https://example.com/video'}, 'Серия 1'));
+  assert.deepEqual(plain((await pending).map(row => row.balanser)), ['found']);
+  assert.equal(h.storage.kas_active_balanser, 'found');
+  let parsed;
+  h.component.parse = data => parsed = data;
+  h.component.find(); await tick();
+  assert.match(parsed, /1 сезон/);
+  assert.equal(h.calls.length, 5, 'selected catalog was not fetched again');
+  const other = new h.api.component({movie: {id: 603, title: 'Матрица', original_title: 'The Matrix', release_date: '1999-03-30', imdb_id: 'tt0133093', kinopoisk_id: 301}});
+  other.activity = {loader() {}, toggle() {}};
+  assert.equal((await other.checkSources(rows)).length, 1);
+  assert.equal(h.calls.length, 5, 'switching sources reuses card-specific discovery');
+  const different = new h.api.component({movie: {id: 129, title: 'Унесённые призраками'}});
+  different.activity = {loader() {}, toggle() {}};
+  const newPending = different.checkSources(rows);
+  assert.equal(h.calls.length, 8, 'another card must be checked separately');
+  different.destroy(); await newPending;
+  h.component.destroy(); other.destroy();
+});
+
+test('closing or refreshing discovery stops its queue and stale responses cannot restore sources', async () => {
+  for (const action of ['reset', 'destroy']) {
+    const h = htmlHarness();
+    const rows = ['a','b','c','d'].map(balanser => ({balanser, url: 'https://example.com/' + balanser}));
+    const pending = h.component.checkSources(rows);
+    h.component[action]();
+    h.calls.forEach(call => call.ok(catalogRow({method: 'play', url: 'https://cdn.example/video.mp4'})));
+    assert.deepEqual(plain(await pending), []);
+    assert.equal(h.calls.length, 3);
+    assert.equal(h.storage.kas_active_balanser, undefined);
+  }
+});
+
+test('the overall discovery deadline retains confirmed sources and stops further folder probes', async () => {
+  const h = htmlHarness();
+  let deadline;
+  h.context.setTimeout = (callback, ms) => ms === 25000 ? (deadline = callback, null) : setTimeout(callback, ms);
+  const rows = ['ready','slow','also-slow','queued'].map(balanser=>({balanser,url:'https://example.com/'+balanser}));
+  const pending = h.component.checkSources(rows);
+  h.calls[0].ok(catalogRow({method:'play',url:'https://cdn.example/ready.mp4'}));
+  h.calls[1].ok(catalogRow({method:'link',url:'https://example.com/folder'},'1 сезон'));
+  const count = h.calls.length;
+  deadline();
+  assert.deepEqual(plain((await pending).map(row=>row.balanser)),['ready']);
+  assert.equal(h.calls.length,count,'timed out folders must not continue requesting more pages');
+  h.component.destroy();
+});
+
+test('an empty season folder and an anime release without video are not available sources', async () => {
+  const h = htmlHarness();
+  const rows = [{balanser:'one',url:'https://example.com/catalog'}, {balanser:'kas_aniliberty',url:'kas:anime'}];
+  const pending = h.component.checkSources(rows);
+  h.calls[0].ok(catalogRow({method:'link',url:'https://example.com/empty'}, '1 сезон'));
+  h.calls[2].ok('');
+  h.calls[1].ok(JSON.stringify([{id:42,name:{main:'Матрица'},year:1999}]));
+  h.calls[3].ok(JSON.stringify({id:42, episodes:[]}));
+  assert.deepEqual(plain(await pending), []);
+  h.component.destroy();
+});
+
+test('source titles ignore historical statistics and retain configured order', () => {
+  const h = harness({'ou_stats_v2_https://beta.mitsu.tv/api': {a:{ok:1,ms:40000,fail:8},b:{ok:9,ms:10}}});
+  const items = h.api.ouSortItems({a:{name:'Kodik'},b:{name:'Kinotochka'}}, ['a','b'],'a');
+  assert.deepEqual(plain(items.map(x => x.title)), ['Kodik','Kinotochka']);
+  assert.equal(items[0].selected, true);
+  assert.doesNotMatch(source, /ou_stats_v2_|ouWatchPlayback|ouBadge/);
+});
+
+test('Explorer cannot replace a series search title with its movie placeholder or mutate the original card', () => {
+  const h = harness();
+  const Original = h.Lampa.Explorer;
+  h.Lampa.Explorer = function(object) {
+    object.movie.title = object.movie.title || 'Фильм не найден';
+    object.movie.original_title = object.movie.original_title || '';
+    return new Original(object);
+  };
+  const movie = {id:94664,name:'Реинкарнация безработного',original_name:'Mushoku Tensei'};
+  const component = new h.api.component({movie});
+  const url = new URL(component.requestParams('http://wtch.ch/lite/kodik'));
+  assert.equal(url.searchParams.get('title'), movie.name);
+  assert.equal(url.searchParams.get('original_title'), movie.original_name);
+  assert.equal(movie.title, undefined);
+  component.destroy();
+});
+
+test('manual refresh invalidates negative results and discovers a recovered provider', async () => {
+  const h = htmlHarness();
+  const rows = [{balanser:'recovered',name:'Recovered',url:'https://example.com/catalog'}];
+  const pending = h.component.checkSources(rows);
+  h.calls[0].fail({status:503});
+  assert.equal((await pending).length,0);
+  let found = false;
+  h.component.search = () => found = true;
+  h.component.refreshSources();
+  h.calls[1].ok(catalogRow({method:'play',url:'https://cdn.example/video.mp4'}));
+  await tick();
+  assert.equal(found,true);
+  assert.equal(h.storage.kas_active_balanser,'recovered');
+  h.component.destroy();
+});
+
+test('Collaps series preserve the selected voice in lazy episode and playlist resolvers', async () => {
+  const h = harness({kas_balanser:'collaps'},'tizen',{id:1396,name:'Во все тяжкие',original_name:'Breaking Bad',number_of_seasons:5});
+  await h.component.startSource([h.api.ouDefaultSources().find(row=>row.balanser==='collaps')]);
+  let videos;
+  h.component.display = value => videos=value;
+  h.component.request('https://api.bwa.ad/lite/collaps?season=2&episode=1');
+  h.calls[0].ok({episodes:[1,2,3],streams:[{kind:'hls',voice:'LostFilm',url:'https://cdn.example/1.m3u8',quality:'720p'}]});
+  assert.deepEqual(plain(videos.map(item=>item.episode)),[1,2,3]);
+  assert.ok(videos.every(item=>item.season===2&&item.kas_bwa_voice==='LostFilm'));
+  let stream;
+  h.component.getFileUrl(videos[2],value=>stream=value);
+  assert.equal(new URL(h.calls[1].url).searchParams.get('episode'),'3');
+  h.calls[1].ok({streams:[{kind:'hls',voice:'Другой перевод',url:'https://cdn.example/wrong.m3u8'}]});
+  assert.equal(stream,false,'do not silently switch a missing translation');
+  h.component.destroy();
+});
+
+test('Kodik combines split cours into 24 actual episodes with shared voice and untouched resolver URLs', async () => {
+  const movie = {id:94664,name:'Реинкарнация безработного: История о приключениях в другом мире', original_name:'Mushoku Tensei', first_air_date:'2021-01-11',imdb_id:'tt13293588',kinopoisk_id:1312253};
+  const h = htmlHarness({kas_balanser:'kodik',online_choice_kodik:{94664:{season:1,voice_name:'AniLibria'}}}, movie);
+  const rows = [{balanser:'kodik',name:'Kodik',url:'http://wtch.ch/lite/kodik'}];
+  await h.component.startSource(rows);
+  const pending = h.component.checkSources(rows);
+  h.calls[0].ok([1,2].map(n => catalogRow({method:'link',url:'http://wtch.ch/base'+n},n+' сезон')).join(''));
+  h.calls[1].ok(catalogRow({method:'call',url:'http://wtch.ch/video/base'},'Серия 1','videos__item','s="1" e="1"'));
+  const parts = [1,2].map(part => catalogRow({method:'link',similar:true,title:`Реинкарнация безработного [ТВ-2, часть ${part}] / Mushoku Tensei II`,url:`http://wtch.ch/part${part}`}, 'Релиз'));
+  parts.push(catalogRow({method:'link',similar:true,title:'Другое аниме [ТВ-2, часть 2]',url:'http://wtch.ch/wrong'}));
+  h.calls[2].ok(parts.join(''));
+  assert.equal((await pending).length,1);
+  let displayed;
+  h.component.display = videos => displayed = videos;
+  h.component.find();
+  const page = (part, active = 'AniLibria') => ['AniLibria', 'OnlyPart'+part].map(voice => catalogRow({method:'link',url:`http://wtch.ch/part${part}?voice=${voice}`},voice,'videos__button'+(voice===active?' active':''))).join('') +
+    Array.from({length:12},(_,i) => catalogRow({method:'call',url:`http://wtch.ch/video/part${part}/${i+1}`},`${i+1} серия`,'videos__item',`s="2" e="${i+1}"`)).join('');
+  h.calls[3].ok(page(1)); h.calls[4].ok(page(2)); await tick();
+  assert.equal(displayed.length,24);
+  assert.deepEqual(plain(displayed.map(x=>x.episode)),Array.from({length:24},(_,i)=>i+1));
+  assert.equal(displayed[12].url,'http://wtch.ch/video/part2/1');
+  assert.equal(displayed[23].url,'http://wtch.ch/video/part2/12');
+  assert.ok(displayed.every(x=>x.season===2 && x.voice_name==='AniLibria'));
+  let stream;
+  h.component.getFileUrl(displayed[23],value=>stream=value);
+  h.calls[5].ok({url:'https://cdn.example/actual-part2-12.m3u8',quality:{'720p':'https://cdn.example/actual-part2-12.m3u8'}});
+  assert.equal(stream.url,'https://cdn.example/actual-part2-12.m3u8');
+  h.component.destroy();
+});
+
+test('Collaps JSON resolves films and next episodes without sending account credentials to BWA', async () => {
+  const h = harness({account_email:'private@example.com'});
+  h.Lampa.Utils.hash = () => 'private-hash';
+  const defaults = h.api.ouDefaultSources();
+  assert.ok(defaults.some(row=>row.balanser==='kinotochka'));
+  const row = defaults.find(row=>row.balanser==='collaps');
+  await h.component.startSource([row]);
+  const url = h.component.requestParams(row.url);
+  assert.doesNotMatch(h.api.account(url), /private|cub_id|account_email/);
+  let videos;
+  h.component.display = value=>videos=value;
+  h.component.request(url);
+  h.calls[0].ok(JSON.stringify({streams:[{kind:'hls',voice:'Дубляж',quality:'720p',url:'https://cdn.example/720.m3u8'},{kind:'hls',voice:'Дубляж',quality:'480p',url:'https://cdn.example/480.m3u8'}]}));
+  assert.equal(videos.length,1);
+  assert.equal(videos[0].quality['480p'],'https://cdn.example/480.m3u8');
+  let resolved;
+  h.component.getFileUrl({method:'call',url:row.url+'?season=2&episode=24',kas_bwa_voice:'Дубляж'},data=>resolved=data);
+  h.calls[1].ok({streams:[{kind:'hls',voice:'Дубляж',quality:'720p',url:'https://cdn.example/24.m3u8'}]});
+  assert.equal(resolved.url,'https://cdn.example/24.m3u8');
+  h.component.destroy();
+});
 
 test('former default migrates once; explicit restoration and custom servers survive', () => {
   const a = harness({ou_backend: 'https://akter-black.com/'});
@@ -69,7 +261,7 @@ test('former default migrates once; explicit restoration and custom servers surv
 test('default sources are available without backend discovery and start with Filmix', async () => {
   const h = harness();
   const rows = await h.component.createSource();
-  assert.deepEqual(plain(rows.map(x => x.balanser)), ['fxapi', 'phantom', 'zetflix', 'cdnvideohub', 'kodik', 'veoveo', 'kinotochka', 'rutubemovie', 'vkmovie', 'kas_aniliberty', 'kas_torrents']);
+  assert.deepEqual(plain(rows.map(x => x.balanser)), ['fxapi', 'phantom', 'zetflix', 'cdnvideohub', 'kodik', 'veoveo', 'collaps', 'kinotochka', 'rutubemovie', 'vkmovie', 'kas_aniliberty', 'kas_torrents']);
   assert.equal(h.calls.length, 0);
   assert.equal(h.storage.kas_active_balanser, 'fxapi');
 });
@@ -233,7 +425,7 @@ test('full plugin registers alongside Lampac and duplicate loading is harmless',
   vm.runInNewContext(source, h.context);
   assert.equal(registered, 1);
   assert.equal(settings, 1);
-  assert.equal(h.Lampa.Manifest.plugins.version, '2.1.3');
+  assert.equal(h.Lampa.Manifest.plugins.version, '2.2.0');
   // Lampa Params.update treats a non-string values field as a lookup table.
   // Opening Settings crashed here when input registration omitted values.
   const input = registeredSettings.find(param => param.name === 'ou_backend');

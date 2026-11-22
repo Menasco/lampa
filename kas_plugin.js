@@ -9,9 +9,11 @@
   'use strict';
 
   if (window.kas_plugin_loaded) return;
-  var OU_VERSION = '2.1.3';
+  var OU_VERSION = '2.2.0';
   var OU_DEFAULT = 'https://beta.mitsu.tv/api/';
   var OU_FILMIX = 'http://wtch.ch/';
+  var OU_BWA = 'https://api.bwa.ad/';
+  var ouCatalogCache = []; // Per-card memory cache; never persist signed stream URLs.
   function ouBackend(value) {
     value = String(value || '').trim();
     if (!/^https?:\/\/[^\s/?#]+(?:\/[^?#]*)?$/i.test(value)) return OU_DEFAULT;
@@ -69,7 +71,7 @@
     ];
   }
   function ouPreferredSources(rows) {
-    var order = ['filmix', 'filmixtv', 'fxapi', 'phantom', 'zetflix', 'cdnvideohub', 'kodik', 'veoveo', 'kinotochka', 'hdvb', 'vibix', 'rutubemovie', 'rutube', 'vkmovie', 'vkvideo'];
+    var order = ['filmix', 'filmixtv', 'fxapi', 'phantom', 'zetflix', 'cdnvideohub', 'kodik', 'veoveo', 'collaps', 'kinotochka', 'hdvb', 'vibix', 'rutubemovie', 'rutube', 'vkmovie', 'vkvideo'];
     return (Array.isArray(rows) ? rows : []).filter(function (row) {
       return row && row.show !== false && order.indexOf(String(row.balanser || '').toLowerCase()) !== -1 && /^https?:\/\//i.test(row.url || '');
     }).sort(function (a, b) {
@@ -84,12 +86,14 @@
       {balanser: 'cdnvideohub', name: 'VideoHUB', url: OU_BASE + 'lite/cdnvideohub'},
       {balanser: 'kodik', name: 'Kodik', url: OU_FILMIX + 'lite/kodik'},
       {balanser: 'veoveo', name: 'VeoVeo', url: OU_BASE + 'lite/veoveo'},
+      {balanser: 'collaps', name: 'Collaps', url: OU_BWA + 'lite/collaps'},
       {balanser: 'kinotochka', name: 'Kinotochka', url: OU_BASE + 'lite/kinotochka'},
       {balanser: 'rutubemovie', name: 'Rutube', url: OU_FILMIX + 'lite/rutubemovie'},
       {balanser: 'vkmovie', name: 'VK Видео', url: OU_BASE + 'lite/vkmovie'}
     ]);
   }
   function ouSourceBase(url) {
+    if (String(url).indexOf(OU_BWA) === 0) return OU_BWA;
     if (String(url).indexOf(OU_FILMIX) === 0) return OU_FILMIX;
     return OU_BASE;
   }
@@ -147,66 +151,56 @@
     }).filter(function (ep) { return !!ep.url; });
   }
 
-  // ===== Kas plugin: реальные замеры на устройстве =====
-  // Меряем время «клик по варианту -> ссылка получена и отдана плееру» (это и есть
-  // основная задержка: сервер достаёт поток с балансера). Копим по каждому источнику.
-  var ou_checking = false;
-  var ou_pending = null;
-  function ouResolveStart() {
-    try { ou_pending = { key: (Lampa.Storage.get('kas_active_balanser', '') || ''), t: Date.now() }; }
-    catch (e) { ou_pending = null; }
+  function ouTitle(value) {
+    return String(value || '').toLowerCase().replace(/ё/g, 'е').replace(/\[[^\]]*\]|\([^)]*\)/g, '')
+      .replace(/[^a-zа-я0-9\u3040-\u9fff]+/g, ' ').trim();
   }
-  function ouRecord(key, ok, ms) {
-    try {
-      var stats = Lampa.Storage.get('ou_stats_v2_' + OU_HOST, {}); if (!stats || typeof stats !== 'object') stats = {};
-      var s = stats[key] || { ms: 0, ok: 0, fail: 0 };
-      if (ok) { if (ms < 0) ms = 0; if (ms > 90000) ms = 90000; s.ms = s.ok ? Math.round(s.ms * 0.6 + ms * 0.4) : ms; s.ok++; }
-      else { s.fail++; }
-      s.ts = Date.now(); stats[key] = s;
-      Lampa.Storage.set('ou_stats_v2_' + OU_HOST, stats);
-    } catch (e) {}
+  function ouMatches(row, movie, search) {
+    var titles = [search || movie.title || movie.name, movie.original_title || movie.original_name];
+    var names = [row.title || row.text || '', row.name && row.name.main, row.name && row.name.english];
+    var year = String(movie.release_date || movie.first_air_date || '').slice(0, 4);
+    var parts = /\[тв-\d+|часть\s*\d+/i.test(names[0]);
+    if (!search && row.year && year && String(row.year) !== year && !(movie.name && parts)) return false;
+    return names.some(function (name) {
+      return String(name || '').split(' / ').some(function (variant) {
+        return titles.some(function (title) {
+          if (!title) return false;
+          var a = ouTitle(variant), b = ouTitle(title);
+          return a && (a === b || (movie.name && ouTitle(variant.split(':')[0]) === ouTitle(title.split(':')[0])));
+        });
+      });
+    });
   }
-  // Неудача резолва: ссылку на поток получить не удалось.
-  function ouResolveDone(ok) {
-    if (!ou_pending) return;
-    var p = ou_pending; ou_pending = null;
-    if (p.key && !ok) ouRecord(p.key, false);
+  function ouKodikParts(items, movie) {
+    var seasons = {};
+    items.forEach(function (row) {
+      var match = /\[ТВ-(\d+),?\s*часть\s*(\d+)\]/i.exec(row.title || row.text || '');
+      if (!match || !ouMatches(row, movie) || !row.url) return;
+      var season = Number(match[1]), part = Number(match[2]);
+      if (!seasons[season]) seasons[season] = [];
+      if (!seasons[season].some(function (item) { return item.part === part; })) seasons[season].push({part: part, url: row.url});
+    });
+    Object.keys(seasons).forEach(function (key) { seasons[key].sort(function (a, b) { return a.part - b.part; }); });
+    return seasons;
   }
-  // Успех засчитывается только когда видео РЕАЛЬНО пошло: плеер двигает
-  // element.timeline.time лишь при воспроизведении. Схема write-ahead: при старте
-  // плеера сразу пишем сбой (битое 00:00 так и останется сбоем, даже если браузер
-  // приостановит таймеры или пользователь выйдет), а когда таймлайн сдвинулся —
-  // запись повышается до успеха с временем резолва.
-  function ouUpgrade(key, ms) {
-    try {
-      var stats = Lampa.Storage.get('ou_stats_v2_' + OU_HOST, {}); if (!stats || typeof stats !== 'object') stats = {};
-      var s = stats[key] || { ms: 0, ok: 0, fail: 0 };
-      if (s.fail > 0) s.fail--;
-      if (ms < 0) ms = 0; if (ms > 90000) ms = 90000;
-      s.ms = s.ok ? Math.round(s.ms * 0.6 + ms * 0.4) : ms;
-      s.ok++; s.ts = Date.now();
-      stats[key] = s;
-      Lampa.Storage.set('ou_stats_v2_' + OU_HOST, stats);
-    } catch (e) {}
+  function ouBwaStreams(json, voice) {
+    var groups = [];
+    (json && Array.isArray(json.streams) ? json.streams : []).forEach(function (stream) {
+      var url = ouUrl(stream.url, OU_BWA);
+      if (!url || (stream.kind && stream.kind !== 'hls' && stream.kind !== 'mp4')) return;
+      var name = stream.voice || 'Оригинал';
+      var group = groups.filter(function (item) { return item.voice_name === name; })[0];
+      if (!group) { group = {method: 'play', url: url, voice_name: name, text: name, quality: {}}; groups.push(group); }
+      if (stream.quality) group.quality[stream.quality] = url;
+    });
+    return voice ? groups.filter(function (group) { return group.voice_name === voice; }) : groups;
   }
-  function ouWatchPlayback(element) {
-    try {
-      if (!ou_pending) return;
-      var p = ou_pending; ou_pending = null;
-      if (!p.key) return;
-      var resolveMs = Date.now() - p.t;
-      var tl = element && element.timeline;
-      if (!tl) return; // нет таймлайна — не судим ни в плюс, ни в минус
-      ouRecord(p.key, false); // провизорный сбой (write-ahead)
-      var t0 = tl.time || 0, tries = 0;
-      var iv = setInterval(function () {
-        tries++;
-        var cur = tl.time || 0;
-        if (cur > 0 && cur !== t0) { clearInterval(iv); ouUpgrade(p.key, resolveMs); }
-        else if (tries >= 120) clearInterval(iv);
-      }, 1000);
-    } catch (e) {}
+  function ouQuery(url, key, value) {
+    var pattern = new RegExp('([?&])' + key + '=[^&]*');
+    return pattern.test(url) ? url.replace(pattern, '$1' + key + '=' + encodeURIComponent(value)) :
+      url + (url.indexOf('?') >= 0 ? '&' : '?') + key + '=' + encodeURIComponent(value);
   }
+
   function ouTizenHlsSupported() {
     return Lampa.Platform.is('tizen') && Lampa.PlayerVideo && Lampa.PlayerVideo.registerTube &&
       window.Hls && window.Hls.isSupported && window.Hls.isSupported();
@@ -298,35 +292,10 @@
       }
     });
   }
-  function ouBadge(color, text) { return ' <span style="color:' + color + ';font-size:.8em;white-space:nowrap">' + text + '</span>'; }
-  // Метки: сначала реальный опыт на устройстве, потом слабый серверный сигнал.
-  function ouSortItems(sources, filter_sources, balanser, checking) {
-    var stats = {};
-    try { stats = Lampa.Storage.get('ou_stats_v2_' + OU_HOST, {}) || {}; } catch (e) {}
-    var items = filter_sources.map(function (e, i) {
-      var nm = ouEscape(sources[e].name || e);
-      var st = stats[e];
-      var rank = 3, ms = 999999, badge = '';
-      if (st && st.ok) {
-        ms = st.ms; var sec = Math.max(1, Math.round(st.ms / 1000));
-        if (st.ms < 10000) { rank = 0; badge = ouBadge('#5ad17a', '\u26a1 ~' + sec + '\u0441'); }          // ⚡ ~Nс (быстро)
-        else { rank = 1; badge = ouBadge('#f5c842', '\ud83d\udc22 ~' + sec + '\u0441'); }                  // 🐢 ~Nс (медленно)
-        if (st.fail) badge += ouBadge('#ff6b6b', '\u00b7 \u0431\u044b\u0432\u0430\u043b\u043e \u0441\u0431\u043e\u0439'); // · бывало сбой
-      } else if (st && st.fail) {
-        rank = 5; badge = ouBadge('#ff6b6b', '\u2715 \u043d\u0435 \u043e\u0442\u043a\u0440\u044b\u043b\u0441\u044f \u0443 \u0442\u0435\u0431\u044f'); // ✕ не открылся у тебя
-      } else if (/\d{3,4}p|4K/i.test(nm)) {
-        rank = 2; badge = ouBadge('#9aa0a6', '\u25cb \u043f\u043e\u0442\u043e\u043a\u0438 \u0435\u0441\u0442\u044c'); // ○ потоки есть (серый, не пробовал)
-      } else if (checking) {
-        rank = 4; badge = ouBadge('#f5c842', '\u25cf \u043f\u0440\u043e\u0432\u0435\u0440\u044f\u0435\u0442\u0441\u044f\u2026'); // ● проверяется…
-      }
-      return { title: nm + badge, source: e, selected: e == balanser, ghost: !sources[e].show, ou_rank: rank, ou_ms: ms, ou_idx: i };
+  function ouSortItems(sources, names, selected) {
+    return names.map(function (id) {
+      return {title: ouEscape(sources[id].name || id), source: id, selected: id === selected};
     });
-    items.sort(function (a, b) {
-      if (a.ou_rank !== b.ou_rank) return a.ou_rank - b.ou_rank;
-      if (a.ou_ms !== b.ou_ms) return a.ou_ms - b.ou_ms;
-      return a.ou_idx - b.ou_idx;
-    });
-    return items;
   }
 
   var Defined = {
@@ -579,6 +548,13 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
   var Network = Lampa.Reguest;
 
   function component(object) {
+    // Explorer inserts a placeholder title into series cards containing only
+    // name/original_name. Normalize a copy before it can corrupt title searches.
+    var movie = {};
+    Object.keys(object.movie || {}).forEach(function (key) { movie[key] = object.movie[key]; });
+    if (movie.name && (!movie.title || movie.title === 'Фильм не найден')) movie.title = movie.name;
+    if (movie.original_name && !movie.original_title) movie.original_title = movie.original_name;
+    object.movie = movie;
     var network = new Network();
     var scroll = new Lampa.Scroll({
       mask: true,
@@ -591,7 +567,6 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
     var source;
     var balanser;
     var initialized;
-    var balanser_timer;
     var images = [];
     var number_of_requests = 0;
     var number_of_requests_timer;
@@ -599,6 +574,14 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
     var destroyed = false;
     var requestEpoch = 0;
     var lastRequestedUrl;
+    var catalogEpoch = 0;
+    var catalogScan = {stopped: false};
+    var catalogRequests = [];
+    var catalogPages = {};
+    var catalogRows = [];
+    var catalogKey = '';
+    var kodikParts = {};
+    var idsResolved = false;
     var filter_translate = {
       season: Lampa.Lang.translate('torrent_serial_season'),
       voice: Lampa.Lang.translate('torrent_parser_voice'),
@@ -609,7 +592,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       voice: []
     };
 
-    balansers_with_search = ['fxapi', 'filmix', 'phantom', 'zetflix', 'cdnvideohub', 'kodik', 'veoveo', 'kinotochka', 'rutube', 'vk', 'kas_aniliberty'];
+    balansers_with_search = ['fxapi', 'filmix', 'phantom', 'zetflix', 'cdnvideohub', 'kodik', 'veoveo', 'collaps', 'kinotochka', 'rutube', 'vk', 'kas_aniliberty'];
 
     function balanserName(j) {
       var bals = j.balanser;
@@ -644,6 +627,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
 
     this.initialize = function() {
       var _this = this;
+      var initialEpoch = catalogEpoch;
       this.loading(true);
       filter.onSearch = function(value) {
 
@@ -658,19 +642,11 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       filter.onBack = function() {
         _this.start();
       };
-      filter.render().find('.selector').on('hover:enter', function() {
-        clearInterval(balanser_timer);
-      });
       filter.render().find('.filter--search').appendTo(filter.render().find('.torrent-filter'));
       filter.onSelect = function(type, a, b) {
         if (type == 'filter') {
-          if (a.ou_clear) {
-            try { Lampa.Storage.set('ou_stats_v2_' + OU_HOST, {}); } catch (e) {}
-            try { filter.set('sort', ouSortItems(sources, filter_sources, balanser, ou_checking)); } catch (e) {}
-            Lampa.Noty.show('\u0421\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043a\u0430 \u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a\u043e\u0432 \u0441\u0431\u0440\u043e\u0448\u0435\u043d\u0430');
-            setTimeout(Lampa.Select.close, 10);
-            return;
-          }
+          if (a.torrents) { Lampa.Select.close(); return _this.openTorrents(); }
+          if (a.refresh) { Lampa.Select.close(); return _this.refreshSources(); }
           if (a.reset) {
 			  clarificationSearchDelete();
 
@@ -731,7 +707,12 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
 		  });
 	  }
       this.createSource().then(function(json) {
-        if (destroyed) return;
+        if (destroyed || initialEpoch !== catalogEpoch) return [];
+        catalogRows = json;
+        return _this.externalids().then(function () { return destroyed || initialEpoch !== catalogEpoch ? [] : _this.checkSources(json); });
+      }).then(function(json) {
+        if (destroyed || initialEpoch !== catalogEpoch) return;
+        if (!json.length) return _this.noSources();
         if (!balansers_with_search.find(function(b) {
             return balanser.slice(0, b.length) == b;
           })) {
@@ -751,6 +732,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
     };
     this.externalids = function() {
       return new Promise(function(resolve, reject) {
+        if (idsResolved) return resolve();
         object.movie.imdb_id = object.movie.imdb_id || object.movie.imdbid;
         object.movie.kinopoisk_id = object.movie.kinopoisk_id || object.movie.kinopoiskid || object.movie.kp_id;
         if (!object.movie.imdb_id || !object.movie.kinopoisk_id) {
@@ -772,9 +754,9 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
                 if (json[key]) object.movie[key] = json[key];
               });
             }
-            resolve();
+            idsResolved = true; resolve();
           }, function() {
-            resolve();
+            idsResolved = true; resolve();
           }, false, {
               headers: addHeaders(url)
 		  });
@@ -823,7 +805,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       query.push('clarification=' + (object.clarification ? 1 : 0));
       query.push('similar=' + (object.similar ? true : false));
       query.push('rchtype=' + (((window.rch_nws && window.rch_nws[hostkey]) ? window.rch_nws[hostkey].type : (window.rch && window.rch[hostkey]) ? window.rch[hostkey].type : '') || ''));
-      if (url.indexOf(OU_DEFAULT) !== 0 && Lampa.Storage.get('account_email', '')) query.push('cub_id=' + Lampa.Utils.hash(Lampa.Storage.get('account_email', '')));
+      if (url.indexOf(OU_BWA) !== 0 && url.indexOf(OU_DEFAULT) !== 0 && Lampa.Storage.get('account_email', '')) query.push('cub_id=' + Lampa.Utils.hash(Lampa.Storage.get('account_email', '')));
       return url + (url.indexOf('?') >= 0 ? '&' : '?') + query.join('&');
     };
     this.getLastChoiceBalanser = function() {
@@ -836,6 +818,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
     };
     this.startSource = function(json) {
       return new Promise(function(resolve, reject) {
+        sources = {};
         json.forEach(function(j) {
           var name = balanserName(j);
           sources[name] = {
@@ -882,6 +865,151 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
         });
       });
     };
+    // Independent requests prevent one provider from cancelling another. Both
+    // closing the activity and refreshing invalidate every pending callback.
+    this.cancelCatalog = function() {
+      catalogEpoch++;
+      catalogScan.stopped = true;
+      var pending = catalogRequests.slice();
+      catalogRequests = [];
+      pending.forEach(function (cancel) { cancel(); });
+    };
+    this.catalogFetch = function(url, done) {
+      if (Object.prototype.hasOwnProperty.call(catalogPages, url)) return done(catalogPages[url]);
+      var request = new Network(), finished = false;
+      function finish(data) {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+        var index = catalogRequests.indexOf(cancel);
+        if (index >= 0) catalogRequests.splice(index, 1);
+        if (data != null) catalogPages[url] = data;
+        done(data);
+      }
+      function cancel() { request.clear(); finish(null); }
+      var timer = setTimeout(cancel, 9000);
+      catalogRequests.push(cancel);
+      request.timeout(8500);
+      request.native(account(url), finish, function () { finish(null); }, false, {dataType: 'text', headers: addHeaders(url)});
+    };
+    this.probeSource = function(row, done) {
+      var self = this, epoch = catalogEpoch, count = 0, scan = catalogScan;
+      var root = row.url === 'kas:anime' ? OU_ANI + 'app/search/releases?query=' + encodeURIComponent(object.clarification ? object.search : object.movie.title || object.movie.name || '') : this.requestParams(row.url);
+      var visited = {};
+      function inspect(url, depth, complete) {
+        if (destroyed || scan.stopped || epoch !== catalogEpoch) return complete(false);
+        if (visited[url] || count >= 7 || depth > 3) return complete(false);
+        visited[url] = true; count++;
+        self.catalogFetch(url, function (data) {
+          if (destroyed || scan.stopped || epoch !== catalogEpoch || data == null) return complete(false);
+          var json = typeof data === 'object' ? data : Lampa.Arrays.decodeJson(data, {});
+          if (!json || json.accsdb || json.rch || json.error) return complete(false);
+          if (row.url.indexOf(OU_BWA) === 0) return complete(ouBwaStreams(json).length > 0);
+          if (row.url === 'kas:anime') {
+            if (!Array.isArray(json)) return complete(ouAnimeVideos(json).length > 0);
+            var releases = json.filter(function (item) { return item && /^\d+$/.test(String(item.id)) && ouMatches(item, object.movie, object.clarification && object.search); });
+            catalogPages[root] = releases;
+            return next(releases.map(function (item) { return OU_ANI + 'anime/releases/' + item.id; }), depth, complete);
+          }
+          var items = self.parseJsonDate(data, '.videos__item', ouSourceBase(row.url));
+          if (items.some(function (item) { return (item.method === 'play' || item.method === 'call') && !!item.url; })) return complete(true);
+          var links = items.filter(function (item) {
+            return item.method === 'link' && item.url && (!item.similar || ouMatches(item, object.movie, object.clarification && object.search));
+          });
+          if (items.some(function (item) { return item.similar; })) catalogPages[url] = self.catalogHtml(links);
+          next(links.map(function (item) { return item.url; }), depth, complete);
+        });
+      }
+      function next(urls, depth, complete) {
+        if (!urls.length) return complete(false);
+        inspect(urls.shift(), depth + 1, function (found) {
+          if (found) complete(true); else next(urls, depth, complete);
+        });
+      }
+      inspect(root, 0, function (found) {
+        if (destroyed || scan.stopped || epoch !== catalogEpoch) return done(false);
+        // ID-based anime catalogs frequently omit a second cour. Discover only
+        // explicitly numbered parts of this title, never arbitrary search hits.
+        if (row.balanser !== 'kodik' || !object.movie.name || object.clarification || row.url.indexOf(OU_FILMIX) !== 0) return done(found);
+        var title = String(object.movie.name).split(':')[0].trim();
+        self.catalogFetch(row.url + '?title=' + encodeURIComponent(title) + '&clarification=1', function (data) {
+          if (destroyed || scan.stopped || epoch !== catalogEpoch) return done(false);
+          var parts = ouKodikParts(self.parseJsonDate(data || '', '.videos__item', OU_FILMIX), object.movie);
+          if (Object.keys(parts).some(function (key) { return parts[key].length > 1; })) kodikParts = parts;
+          if (found || !Object.keys(parts).length) return done(found);
+          inspect(parts[Object.keys(parts)[0]][0].url, 0, done);
+        });
+      });
+    };
+    this.catalogHtml = function(items) {
+      return items.map(function (item) {
+        return '<div class="videos__item" data-json="' + ouEscape(JSON.stringify(item)) + '">' + ouEscape(item.text || item.title) + '</div>';
+      }).join('');
+    };
+    this.checkSources = function(rows) {
+      var self = this, epoch = catalogEpoch;
+      catalogRows = rows;
+      catalogScan = {stopped: false};
+      var scan = catalogScan;
+      var candidates = rows.filter(function (row) { return row.balanser !== 'kas_torrents'; });
+      catalogKey = JSON.stringify([OU_BASE, object.movie.source, object.movie.id, object.movie.name ? 1 : 0,
+        object.movie.imdb_id, object.movie.kinopoisk_id, object.movie.title || object.movie.name,
+        object.clarification ? object.search : '', !!object.similar, candidates.map(function (row) { return row.url; })]);
+      var cached = ouCatalogCache.filter(function (entry) { return entry.key === catalogKey && Date.now() - entry.time < 120000; })[0];
+      function apply(available) {
+        if (destroyed || epoch !== catalogEpoch) return [];
+        if (!available.length) { sources = {}; filter_sources = []; source = ''; balanser = ''; return []; }
+        return self.startSource(available);
+      }
+      if (cached) {
+        catalogPages = cached.pages; kodikParts = cached.parts;
+        return Promise.resolve(apply(cached.rows));
+      }
+      this.loading(true);
+      scroll.clear();
+      scroll.append($('<div class="empty"><div class="empty__title">Ищем источники для этой карточки…</div></div>'));
+      return new Promise(function (resolve) {
+        var cursor = 0, active = 0, finished = 0, found = {}, completed = false;
+        var deadline = setTimeout(finish, 25000);
+        function finish() {
+          if (completed) return;
+          completed = true; scan.stopped = true; clearTimeout(deadline);
+          // Bound the entire scan, including providers with many empty folders.
+          catalogRequests.slice().forEach(function (cancel) { cancel(); });
+          if (destroyed || epoch !== catalogEpoch) return resolve([]);
+          var available = candidates.filter(function (row) { return found[row.balanser]; });
+          ouCatalogCache = ouCatalogCache.filter(function (entry) { return entry.key !== catalogKey && Date.now() - entry.time < 120000; }).slice(-7);
+          ouCatalogCache.push({key: catalogKey, time: Date.now(), rows: available, pages: catalogPages, parts: kodikParts});
+          Promise.resolve(apply(available)).then(resolve);
+        }
+        function pump() {
+          if (completed) return;
+          if (destroyed || epoch !== catalogEpoch || finished === candidates.length) return finish();
+          while (active < 3 && cursor < candidates.length) {
+            (function (row) {
+              active++;
+              self.probeSource(row, function (ok) { found[row.balanser] = ok; active--; finished++; pump(); });
+            })(candidates[cursor++]);
+          }
+        }
+        pump();
+      });
+    };
+    this.refreshSources = function() {
+      var self = this;
+      this.reset();
+      var epoch = catalogEpoch;
+      ouCatalogCache = ouCatalogCache.filter(function (entry) { return entry.key !== catalogKey; });
+      catalogPages = {}; kodikParts = {}; lastRequestedUrl = '';
+      this.checkSources(catalogRows).then(function (rows) {
+        if (destroyed || epoch !== catalogEpoch) return;
+        if (rows.length) self.search(); else self.noSources();
+      });
+    };
+    this.noSources = function() {
+      this.filter({source: []}, this.getChoice());
+      this.doesNotAnswer({catalog: true, msg: 'Для этой карточки пока не найдены источники с видео.'});
+    };
     this.requestAnime = function(url) {
       var self = this;
       var epoch = ++requestEpoch;
@@ -889,7 +1017,8 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       var query = object.clarification ? object.search : object.movie.title || object.movie.name || object.movie.original_title || object.movie.original_name;
       var path = match ? 'anime/releases/' + match[1] : 'app/search/releases?query=' + encodeURIComponent(query || '');
       network.timeout(15000);
-      network.silent(OU_ANI + path, function (json) {
+      var receive = function (json) {
+        if (typeof json === 'string') json = Lampa.Arrays.decodeJson(json, null);
         if (destroyed || epoch !== requestEpoch) return;
         self.activity.loader(false);
         filter_find.season = [];
@@ -908,7 +1037,9 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
               details: ouEscape(release.type && release.type.description || '')};
           }));
         }
-      }, function () {
+      };
+      if (Object.prototype.hasOwnProperty.call(catalogPages, OU_ANI + path)) return receive(catalogPages[OU_ANI + path]);
+      network.silent(OU_ANI + path, receive, function () {
         if (!destroyed && epoch === requestEpoch) self.doesNotAnswer({msg: 'AniLiberty недоступна: проверьте интернет или повторите запрос позже.'});
       });
     };
@@ -929,6 +1060,18 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
     };
     this.find = function() {
       var self = this;
+      if (balanser === 'kodik' && Object.keys(kodikParts).length) {
+        var root = catalogPages[this.requestParams(source)] || '';
+        var seasons = {};
+        this.parseJsonDate(root, '.videos__item').forEach(function (item) {
+          var match = /^(\d+)\s*сезон/i.exec(item.text || '');
+          if (match) seasons[Number(match[1])] = {title: item.text, url: item.url};
+        });
+        Object.keys(kodikParts).forEach(function (key) { seasons[key] = {title: key + ' сезон', url: 'kas:kodik/' + key}; });
+        filter_find.season = Object.keys(seasons).sort(function (a, b) { return Number(a) - Number(b); }).map(function (key) { return seasons[key]; });
+        var choice = this.getChoice();
+        return this.request((filter_find.season[choice.season] || filter_find.season[0]).url);
+      }
       if (source.indexOf('kas:') === 0) return this.request(source);
       this.externalids().then(function () {
         if (!destroyed) self.request(self.requestParams(source));
@@ -976,11 +1119,13 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       if (url === 'kas:torrents') return this.openTorrents();
       lastRequestedUrl = url;
       if (url.indexOf('kas:anime') === 0) return this.requestAnime(url);
+      if (url.indexOf('kas:kodik/') === 0) return this.requestKodikSeason(url);
       var self = this;
       var epoch = ++requestEpoch;
       url = ouUrl(url, ouSourceBase(source));
       if (!url) return this.doesNotAnswer({msg: 'Источник вернул некорректную ссылку.'});
       lastRequestedUrl = url;
+      if (Object.prototype.hasOwnProperty.call(catalogPages, url)) return this.parse(catalogPages[url]);
       network.timeout(35000);
       number_of_requests++;
       if (number_of_requests < 10) {
@@ -998,7 +1143,71 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
         }, 4000);
       } else this.empty();
     };
-    this.parseJsonDate = function(str, name) {
+    this.kodikPage = function(url, voice, depth, callback) {
+      var self = this, epoch = catalogEpoch;
+      if (depth > 3) return callback(null);
+      this.catalogFetch(url, function (data) {
+        if (destroyed || epoch !== catalogEpoch || data == null) return callback(null);
+        var items = self.parseJsonDate(data, '.videos__item', OU_FILMIX);
+        var buttons = self.parseJsonDate(data, '.videos__button', OU_FILMIX);
+        var videos = items.filter(function (item) { return item.url && (item.method === 'call' || item.method === 'play'); });
+        if (!videos.length) {
+          var folder = items.filter(function (item) { return item.method === 'link' && !item.similar; })[0];
+          return folder ? self.kodikPage(folder.url, voice, depth + 1, callback) : callback(null);
+        }
+        var selected = buttons.filter(function (button) { return button.text === voice; })[0];
+        if (selected && !selected.active) return self.kodikPage(selected.url, '', depth + 1, callback);
+        callback({videos: videos, buttons: buttons, url: url});
+      });
+    };
+    this.requestKodikSeason = function(url) {
+      var self = this, epoch = ++requestEpoch;
+      var match = /^kas:kodik\/(\d+)(?:\?voice=(.*))?$/.exec(url);
+      if (!match || !kodikParts[match[1]]) return this.doesNotAnswer({msg: 'Сезон Kodik не найден. Обновите источники.'});
+      var season = Number(match[1]);
+      var voice = match[2] ? decodeURIComponent(match[2]) : this.getChoice().voice_name;
+      var parts = kodikParts[season];
+      this.loading(true);
+      function load(part, selected) {
+        return new Promise(function (resolve) { self.kodikPage(part.url, selected, 0, resolve); });
+      }
+      Promise.all(parts.map(function (part) { return load(part, ''); })).then(function (pages) {
+        if (destroyed || epoch !== requestEpoch) return;
+        if (pages.some(function (page) { return !page; })) return self.doesNotAnswer({msg: 'Не удалось загрузить одну из частей сезона Kodik. Повторите запрос.'});
+        var voices = pages[0].buttons.map(function (button) { return button.text; }).filter(function (name) {
+          return pages.every(function (page) { return page.buttons.some(function (button) { return button.text === name; }); });
+        });
+        // Offer only translations shared by every part; no hidden voice switch
+        // in the middle of an automatically continued playlist.
+        if (!voices.length && pages.length > 1) return self.doesNotAnswer({msg: 'У частей сезона нет общей озвучки. Откройте нужную часть через поиск Kodik.'});
+        if (voices.indexOf(voice) < 0) voice = voices[0] || '';
+        return Promise.all(pages.map(function (page) { return load(page, voice); })).then(function (selected) {
+          if (destroyed || epoch !== requestEpoch) return;
+          if (selected.some(function (page) { return !page; })) return self.doesNotAnswer({msg: 'Kodik не загрузил выбранную озвучку для всех частей сезона.'});
+          var videos = [], offset = 0;
+          selected.forEach(function (page, partIndex) {
+            var episodes = page.videos.filter(function (item) { return partIndex === 0 || item.episode > 0; }).sort(function (a, b) { return a.episode - b.episode; });
+            var shift = episodes[0].episode <= offset ? offset : 0;
+            episodes.forEach(function (item) {
+              var video = ouStream(item, OU_FILMIX);
+              video.season = season;
+              video.episode = Number(item.episode) + shift;
+              video.text = 'Серия ' + video.episode;
+              video.title = (object.movie.name || '') + ' · ' + season + ' сезон · ' + video.text;
+              video.voice_name = voice;
+              videos.push(video);
+            });
+            offset = Math.max(videos[videos.length - 1].episode, shift + Math.max.apply(null, pages[partIndex].videos.map(function (item) { return Number(item.episode) || 0; })));
+          });
+          filter_find.voice = voices.map(function (name) { return {title: name, url: 'kas:kodik/' + season + '?voice=' + encodeURIComponent(name)}; });
+          self.replaceChoice({voice: Math.max(0, voices.indexOf(voice)), voice_name: voice,
+            voice_url: 'kas:kodik/' + season + '?voice=' + encodeURIComponent(voice)});
+          self.activity.loader(false);
+          self.display(videos);
+        });
+      });
+    };
+    this.parseJsonDate = function(str, name, base) {
       try {
         var html = $('<div>' + str + '</div>');
         var elems = [];
@@ -1007,7 +1216,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
           var data;
           try { data = JSON.parse(item.attr('data-json')); } catch (e) { return; }
           if (!data || typeof data !== 'object') return;
-          data = ouStream(data, ouSourceBase(source));
+          data = ouStream(data, base || ouSourceBase(source));
           var season = item.attr('s');
           var episode = item.attr('e');
           var text = item.text();
@@ -1051,13 +1260,15 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
         Lampa.Loading.stop();
         Lampa.Controller.toggle('content');
         network.clear();
-        ouResolveDone(false);
       });
       network.timeout(35000);
       network.native(account(file.url), function (json) {
         if (destroyed || epoch !== requestEpoch) return;
         if (typeof json === 'string') {
           try { json = JSON.parse(json); } catch (e) { json = null; }
+        }
+        if (file.kas_bwa_voice && json && Array.isArray(json.streams)) {
+          json = ouBwaStreams(json, file.kas_bwa_voice)[0] || {msg: 'Этой серии нет в выбранной озвучке.'};
         }
         if (json && json.rch && !waiting_rch) {
           return self.rch(json, function () {
@@ -1097,7 +1308,6 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
         requestEpoch++;
         network.clear();
         Lampa.Loading.stop();
-        ouResolveDone(false);
         Lampa.Controller.toggle('content');
       });
       var initial = stream.url;
@@ -1209,7 +1419,6 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       var _this5 = this;
       this.draw(videos, {
         onEnter: function onEnter(item, html) {
-          ouResolveStart();
           _this5.getFileUrl(item, function(json, json_call) {
             if (json && json.url) {
               var playlist = [];
@@ -1251,7 +1460,6 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
               if (first.url) {
                 var element = first;
 				element.isonline = true;
-                ouWatchPlayback(element);
                 try {
                   Lampa.Player.play(element);
                   Lampa.Player.playlist(playlist);
@@ -1264,10 +1472,9 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
                 item.mark();
                 _this5.updateBalanser(balanser);
               } else {
-                ouResolveDone(false);
                 Lampa.Noty.show(Lampa.Lang.translate('lampac_nolink'));
               }
-            } else { ouResolveDone(false); Lampa.Noty.show(json_call && json_call.msg || Lampa.Lang.translate('lampac_nolink')); }
+            } else { Lampa.Noty.show(json_call && json_call.msg || Lampa.Lang.translate('lampac_nolink')); }
           });
         },
         onContextMenu: function onContextMenu(item, html, data, call) {
@@ -1295,8 +1502,47 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
             headers: addHeaders()
 		  })
 	}
+    this.parseBwa = function(json) {
+      var self = this, epoch = requestEpoch;
+      var voices = ouBwaStreams(json);
+      if (!voices.length) return this.doesNotAnswer({msg: 'Источник не вернул видео для этой серии или фильма.'});
+      if (!object.movie.name) {
+        filter_find.season = []; filter_find.voice = [];
+        return this.display(voices);
+      }
+      var root = this.requestParams(source);
+      var match = /[?&]season=(\d+)/.exec(lastRequestedUrl || '');
+      var season = match ? Number(match[1]) : 1;
+      var selectedVoice = /[?&]kas_voice=([^&]*)/.exec(lastRequestedUrl || '');
+      var voice = selectedVoice ? decodeURIComponent(selectedVoice[1]) : this.getChoice().voice_name;
+      if (!voices.some(function (item) { return item.voice_name === voice; })) voice = voices[0].voice_name;
+      var seasons = Array.isArray(object.movie.seasons) ? object.movie.seasons.filter(function (item) { return item.season_number > 0 && item.episode_count; }).map(function (item) { return item.season_number; }) : [];
+      if (!seasons.length && Array.isArray(json.src_seasons)) seasons = json.src_seasons.map(function (item) { return Number(item[0]); }).filter(function (n) { return n > 0; });
+      if (!seasons.length) {
+        for (var number = 1; number <= Math.min(100, Number(object.movie.number_of_seasons) || 1); number++) seasons.push(number);
+      }
+      filter_find.season = seasons.map(function (number) { return {title: number + ' сезон', url: ouQuery(ouQuery(root, 'season', number), 'episode', 1)}; });
+      filter_find.voice = voices.map(function (item) { return {title: item.voice_name, url: ouQuery(ouQuery(root, 'season', season), 'kas_voice', item.voice_name)}; });
+      this.replaceChoice({season: Math.max(0, seasons.indexOf(season)), voice: voices.map(function (item) { return item.voice_name; }).indexOf(voice), voice_name: voice});
+      function show(episodes) {
+        if (destroyed || epoch !== requestEpoch) return;
+        var nums = Array.isArray(json.episodes) && json.episodes.length ? json.episodes.map(Number).filter(function (n) { return n > 0; }) : episodes.filter(function (item) {
+          return !item.air_date || item.air_date <= new Date().toISOString().slice(0, 10);
+        }).map(function (item) { return item.episode_number; });
+        if (!nums.length) nums = [1];
+        self.activity.loader(false);
+        self.display(nums.map(function (episode) {
+          return {method: 'call', url: ouQuery(ouQuery(root, 'season', season), 'episode', episode),
+            season: season, episode: episode, text: 'Серия ' + episode, voice_name: voice, kas_bwa_voice: voice};
+        }));
+      }
+      if (Array.isArray(json.episodes) && json.episodes.length) show([]); else this.getEpisodes(season, show);
+    };
     this.parse = function(str) {
-      var json = Lampa.Arrays.decodeJson(str, {});
+      var json = Lampa.Arrays.isObject(str) ? str : Lampa.Arrays.decodeJson(str, {});
+      json = json || {};
+      if (Array.isArray(json.streams)) return this.parseBwa(json);
+      if (json.error) return this.doesNotAnswer({msg: json.error});
       if (Lampa.Arrays.isObject(str) && str.rch) json = str;
       if (json.accsdb) return this.doesNotAnswer(json);
       if (json.rch) return this.rch(json);
@@ -1485,8 +1731,8 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
      */
     this.reset = function() {
       requestEpoch++;
+      this.cancelCatalog();
       last = false;
-      clearInterval(balanser_timer);
       network.clear();
       this.clearImages();
       scroll.render().find('.empty').remove();
@@ -1534,15 +1780,13 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
         title: Lampa.Lang.translate('torrent_parser_reset'),
         reset: true
       });
-      select.push({
-        title: '\u0421\u0431\u0440\u043e\u0441\u0438\u0442\u044c \u0441\u0442\u0430\u0442\u0438\u0441\u0442\u0438\u043a\u0443 \u0438\u0441\u0442\u043e\u0447\u043d\u0438\u043a\u043e\u0432',
-        ou_clear: true
-      });
+      select.push({title: 'Обновить доступные источники', refresh: true});
+      select.push({title: 'Поиск торрентов', torrents: true});
       this.saveChoice(choice);
       if (filter_items.voice && filter_items.voice.length) add('voice', Lampa.Lang.translate('torrent_parser_voice'));
       if (filter_items.season && filter_items.season.length) add('season', Lampa.Lang.translate('torrent_serial_season'));
       filter.set('filter', select);
-      filter.set('sort', ouSortItems(sources, filter_sources, balanser, ou_checking));
+      filter.set('sort', ouSortItems(sources, filter_sources, balanser));
       this.selected(filter_items);
     };
     /**
@@ -1563,7 +1807,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
         }
       }
       filter.chosen('filter', select);
-      filter.chosen('sort', [sources[balanser].name]);
+      filter.chosen('sort', sources[balanser] ? [sources[balanser].name] : []);
     };
     this.getEpisodes = function(season, call) {
       var episodes = [];
@@ -1611,12 +1855,14 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
      */
     this.draw = function(items) {
       var _this8 = this;
+      var epoch = requestEpoch;
       var params = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {};
       if (!items.length) return this.empty();
       scroll.clear();
       if(!object.balanser)scroll.append(Lampa.Template.get('lampac_prestige_watched', {}));
       this.updateWatched();
       this.getEpisodes(items[0].season, function(episodes) {
+        if (destroyed || epoch !== requestEpoch) return;
         var viewed = Lampa.Storage.cache('online_view', 5000, []);
         var serial = object.movie.name ? true : false;
         var choice = _this8.getChoice();
@@ -1627,7 +1873,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
           var episode = serial && episodes.length && !params.similars ? episodes.find(function(e) {
             return e.episode_number == element.episode;
           }) : false;
-          var episode_num = element.episode || index + 1;
+          var episode_num = typeof element.episode === 'number' ? element.episode : index + 1;
           var episode_last = choice.episodes_view[element.season];
           var voice_name = choice.voice_name || (filter_find.voice[0] ? filter_find.voice[0].title : false) || element.voice_name || (serial ? 'Неизвестно' : element.text) || 'Неизвестно';
           if (element.quality) {
@@ -1770,54 +2016,6 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
           });
           scroll.append(html);
         });
-        if (serial && episodes.length > items.length && !params.similars) {
-          var left = episodes.slice(items.length);
-          left.forEach(function(episode) {
-            var info = [];
-            if (episode.vote_average) info.push(Lampa.Template.get('lampac_prestige_rate', {
-              rate: parseFloat(episode.vote_average + '').toFixed(1)
-            }, true));
-            if (episode.air_date) info.push(Lampa.Utils.parseTime(episode.air_date).full);
-            var air = new Date((episode.air_date + '').replace(/-/g, '/'));
-            var now = Date.now();
-            var day = Math.round((air.getTime() - now) / (24 * 60 * 60 * 1000));
-            var txt = Lampa.Lang.translate('full_episode_days_left') + ': ' + day;
-            var html = Lampa.Template.get('lampac_prestige_full', {
-              time: Lampa.Utils.secondsToTime((episode ? episode.runtime : object.movie.runtime) * 60, true),
-              info: info.length ? info.map(function(i) {
-                return '<span>' + i + '</span>';
-              }).join('<span class="online-prestige-split">●</span>') : '',
-              title: episode.name,
-              quality: day > 0 ? txt : ''
-            });
-            var loader = html.find('.online-prestige__loader');
-            var image = html.find('.online-prestige__img');
-            var season = items[0] ? items[0].season : 1;
-            html.find('.online-prestige__timeline').append(Lampa.Timeline.render(Lampa.Timeline.view(Lampa.Utils.hash([season, episode.episode_number, object.movie.original_title].join('')))));
-            var img = html.find('img')[0];
-            if (episode.still_path) {
-              img.onerror = function() {
-                img.src = './img/img_broken.svg';
-              };
-              img.onload = function() {
-                image.addClass('online-prestige__img--loaded');
-                loader.remove();
-                image.append('<div class="online-prestige__episode-number">' + formatEpisodeNumber(episode.episode_number) + '</div>');
-              };
-              img.src = Lampa.TMDB.image('t/p/w300' + episode.still_path);
-              images.push(img);
-            } else {
-              loader.remove();
-              image.append('<div class="online-prestige__episode-number">' + formatEpisodeNumber(episode.episode_number) + '</div>');
-            }
-            html.on('hover:focus', function(e) {
-              last = e.target;
-              scroll.update($(e.target), true);
-            });
-            html.css('opacity', '0.5');
-            scroll.append(html);
-          });
-        }
         if (scroll_to_element) {
           last = scroll_to_element[0];
         } else if (scroll_to_mark) {
@@ -1990,16 +2188,18 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       html.find('.online-empty__title').text(message);
       html.find('.online-empty__time').text(er && er.accsdb
         ? 'Этот сервер требует авторизацию. Выберите другой источник или бэкенд в настройках Kas plugin.'
-        : 'Повторите запрос или выберите другой источник.');
+        : er && er.catalog ? 'Пустые и не ответившие источники скрыты. Можно повторить проверку или уточнить название через поиск.' : 'Повторите запрос или выберите другой источник.');
       html.find('.online-empty__templates').remove();
       html.find('.cancel').text('Повторить').on('hover:enter', function() {
+        if (er && er.catalog) return self.refreshSources();
         self.reset();
         if (retryUrl) self.request(retryUrl);
         else self.search();
       });
       html.find('.change').on('hover:enter', function() {
-        filter.render().find('.filter--sort').trigger('hover:enter');
+        filter.render().find(er && er.catalog ? '.filter--filter' : '.filter--sort').trigger('hover:enter');
       });
+      if (er && er.catalog) html.find('.change').text('Поиск торрентов').off('hover:enter').on('hover:enter', function () { self.openTorrents(); });
       scroll.clear();
       scroll.append(html);
       this.loading(false);
@@ -2027,7 +2227,6 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
           Lampa.Controller.collectionFocus(last || false, scroll.render());
         },
         gone: function gone() {
-          clearTimeout(balanser_timer);
         },
         up: function up() {
           if (Navigator.canmove('up')) {
@@ -2060,12 +2259,12 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
     this.destroy = function() {
       destroyed = true;
       requestEpoch++;
+      this.cancelCatalog();
       clearTimeout(number_of_requests_timer);
       network.clear();
       this.clearImages();
       files.destroy();
       scroll.destroy();
-      clearInterval(balanser_timer);
     };
   }
 
@@ -2262,7 +2461,7 @@ window.rch_nws[hostkey].Registry = function RchRegistry(client, startConnection)
       }
     } catch (e) {}
     if (Lampa.Manifest.app_digital >= 177) {
-      var balansers_sync = ['filmix', 'fxapi', 'phantom', 'zetflix', 'cdnvideohub', 'kodik', 'veoveo', 'kinotochka', 'rutubemovie', 'vkmovie', 'kas_aniliberty'];
+      var balansers_sync = ['filmix', 'fxapi', 'phantom', 'zetflix', 'cdnvideohub', 'kodik', 'veoveo', 'collaps', 'kinotochka', 'rutubemovie', 'vkmovie', 'kas_aniliberty'];
       balansers_sync.forEach(function(name) {
         Lampa.Storage.sync('online_choice_' + name, 'object_object');
       });
